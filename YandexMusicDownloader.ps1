@@ -1621,8 +1621,9 @@ Write-Host '  5 — создать отчёт по недоступным тре
 Write-Host '  6 — проверить расшифровку сохранённого токена (без загрузки и без вывода токена)'
 Write-Host '  7 — проверить шифрование и повторную расшифровку токена (без сети и без изменения сохранённого файла)'
 Write-Host '  8 — повторить незавершённую загрузку по предыдущему логу'
+Write-Host '  9 — восстановить все неудачные треки по очереди (основной загрузчик → резервный источник)'
 Write-Host '  0 — выход'
-$actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5','6','7','8') '1'
+$actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5','6','7','8','9') '1'
 if ($actionChoice -eq '0') { exit 0 }
 if ($actionChoice -eq '4') {
     Invoke-AlternativeTrack
@@ -1644,7 +1645,7 @@ if ($actionChoice -eq '7') {
     Read-Host 'Нажми Enter для выхода' | Out-Null
     exit 0
 }
-if ($actionChoice -eq '8') {
+if ($actionChoice -eq '8' -or $actionChoice -eq '9') {
     $script:resumeSettings = Select-PreviousDownloadLog
     if ($null -eq $script:resumeSettings) {
         Read-Host 'Не удалось выбрать подходящий лог. Нажми Enter для выхода' | Out-Null
@@ -1652,12 +1653,17 @@ if ($actionChoice -eq '8') {
     }
     $script:resumeFromLog = $script:resumeSettings.LogPath
     Write-Host ''
-    Write-Host 'Повтор будет запущен по параметрам из выбранного лога:' -ForegroundColor Cyan
+    if ($actionChoice -eq '8') {
+        Write-Host 'Повтор будет запущен по параметрам из выбранного лога:' -ForegroundColor Cyan
+        Write-Host 'Повтор использует --skip-existing; отсутствующие треки будут обработаны снова, существующие обычно пропускаются.' -ForegroundColor Gray
+    } else {
+        Write-Host 'Будет сформирована очередь проблемных треков из выбранного лога.' -ForegroundColor Cyan
+        Write-Host 'Каждый трек сначала проверит основной загрузчик; оставшиеся ошибки можно попробовать скачать через yt-dlp по одному.' -ForegroundColor Gray
+    }
     Write-Host "Лог:    $($script:resumeSettings.LogPath)" -ForegroundColor DarkGray
     Write-Host "Ссылка: $($script:resumeSettings.Url)"
     Write-Host "Папка:  $($script:resumeSettings.OutputDir)"
     Write-Host "Качество по умолчанию: $($script:resumeSettings.FormatName)"
-    Write-Host 'Повтор использует --skip-existing; отсутствующие треки будут обработаны снова, существующие обычно пропускаются.' -ForegroundColor Gray
     $confirmed = Read-MenuChoice 'Продолжить? (0 — отмена, 1 — да)' @('0','1') '1'
     if ($confirmed -ne '1') { exit 0 }
 }
@@ -1716,10 +1722,10 @@ if (-not ($supportsQuality -and $supportsUrl -and $supportsToken -and $supportsD
 }
 
 Write-Host ''
-if ($actionChoice -eq '8' -and $null -ne $script:resumeSettings) {
+if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings) {
     $script:sourceUrl = $script:resumeSettings.Url
     $script:outputDir = $script:resumeSettings.OutputDir
-    Write-Host 'Для повтора используются ссылка и папка из выбранного лога.' -ForegroundColor Gray
+    Write-Host 'Для выбранного режима используются ссылка и папка из лога.' -ForegroundColor Gray
 } else {
     $sourceUrl = Read-DefaultText 'Ссылка на плейлист/альбом/исполнителя/отдельный трек' $defaultUrl
     $script:sourceUrl = $sourceUrl
@@ -1733,7 +1739,7 @@ if ($script:supportsForceMp3) {
     Write-Host '  2 — AAC/M4A 192 кбит/с (как в исходной команде, без повторного перекодирования)'
     Write-Host '  3 — FLAC (если lossless доступен для трека и аккаунта)'
     $formatDefaultChoice = '2'
-    if ($actionChoice -eq '8' -and $null -ne $script:resumeSettings) {
+    if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings) {
         if ($script:resumeSettings.ForceMp3) { $formatDefaultChoice = '1' }
         elseif ($script:resumeSettings.QualityValue -eq '2') { $formatDefaultChoice = '3' }
     }
@@ -1748,8 +1754,8 @@ if ($script:supportsForceMp3) {
     Write-Host '  2 — FLAC (если lossless доступен для трека и аккаунта)'
     Write-Host '  (Установленная версия не предоставляет --force-mp3; MP3 не будет выдаваться за исходный формат.)' -ForegroundColor DarkYellow
     $formatDefaultChoice = '1'
-    if ($actionChoice -eq '8' -and $null -ne $script:resumeSettings -and $script:resumeSettings.QualityValue -eq '2') { $formatDefaultChoice = '2' }
-    if ($actionChoice -eq '8' -and $null -ne $script:resumeSettings -and $script:resumeSettings.ForceMp3) {
+    if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings -and $script:resumeSettings.QualityValue -eq '2') { $formatDefaultChoice = '2' }
+    if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings -and $script:resumeSettings.ForceMp3) {
         Write-Host 'В старом логе указан MP3, но текущий загрузчик не поддерживает --force-mp3. Повтор будет в AAC/M4A или FLAC.' -ForegroundColor Yellow
     }
     $formatChoice = Read-MenuChoice 'Формат' @('1','2') $formatDefaultChoice
