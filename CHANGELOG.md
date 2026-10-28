@@ -6,6 +6,7 @@
 - Added menu option 9 to build a queue of failed tracks from a previous log, retry each track individually through the main downloader, and optionally try `yt-dlp` as a fallback.
 - Added duration checks using the downloader's installed Mutagen dependency; short or unverified fallback files are kept in staging instead of being silently added to the library.
 - Added a Python helper that reads the DPAPI-decoded token from a temporary process environment variable and never writes it to the inventory file or logs.
+- Applied the selected request delay to source-inventory batches and made a subsequent option-9 run continue only unresolved candidates from its previous recovery queue.
 
 ## 0.1.5 — 2026-10-28
 
