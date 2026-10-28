@@ -226,6 +226,79 @@ function Show-RunEnding([string]$Text, [int]$ExitCode) {
     return ($ExitCode -ne 0 -or $errorLines.Count -gt 0)
 }
 
+
+function Get-UnavailableTrackSummary([object[]]$Entries) {
+    if ($null -eq $Entries -or $Entries.Count -eq 0) { return @() }
+    return @(
+        $Entries |
+            Group-Object -Property { '{0}/{1}|{2}' -f $_.TrackIndex, $_.PlaylistTotal, $_.Track } |
+            ForEach-Object {
+                $entryGroup = $_
+                $firstEntry = $entryGroup.Group[0]
+                [pscustomobject]@{
+                    TrackIndex    = $firstEntry.TrackIndex
+                    PlaylistTotal = $firstEntry.PlaylistTotal
+                    Track         = $firstEntry.Track
+                    Attempts      = $entryGroup.Count
+                    Passes        = (($entryGroup.Group | Select-Object -ExpandProperty Pass -Unique) -join '; ')
+                    Messages      = (($entryGroup.Group | Select-Object -ExpandProperty Message -Unique) -join ' | ')
+                }
+            } |
+            Sort-Object TrackIndex, Track
+    )
+}
+
+function Invoke-AnalyzeExistingLog {
+    $logsDir = Join-Path $scriptRoot 'logs'
+    if (-not (Test-Path -LiteralPath $logsDir -PathType Container)) {
+        Write-Host "Папка журналов не найдена: $logsDir" -ForegroundColor Red
+        return
+    }
+
+    $latestLog = Get-ChildItem -LiteralPath $logsDir -Filter 'download-*.log' -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($null -eq $latestLog) {
+        Write-Host "В папке $logsDir не найдено файлов download-*.log." -ForegroundColor Red
+        return
+    }
+
+    Write-Host ''
+    Write-Host 'АНАЛИЗ СУЩЕСТВУЮЩЕГО ЖУРНАЛА — БЕЗ ЗАГРУЗКИ МУЗЫКИ' -ForegroundColor Cyan
+    $logPath = Read-DefaultText 'Путь к журналу для анализа' $latestLog.FullName
+    if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) {
+        Write-Host "Файл не найден: $logPath" -ForegroundColor Red
+        return
+    }
+
+    $logText = Get-Content -LiteralPath $logPath -Raw -ErrorAction Stop
+    $entries = @(Get-UnavailableTrackEntries -Text $logText)
+    $unavailableSummary = @(Get-UnavailableTrackSummary -Entries $entries)
+    $otherErrors = @(Get-ErrorLines -Text $logText)
+    $analysisTimestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $csvPath = Join-Path $logsDir "unavailable-analysis-$analysisTimestamp.csv"
+    $reportPath = Join-Path $logsDir "errors-analysis-$analysisTimestamp.txt"
+
+    if ($unavailableSummary.Count -gt 0) {
+        $unavailableSummary | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding UTF8
+        Write-Host "Недоступных уникальных позиций плейлиста: $($unavailableSummary.Count)" -ForegroundColor Yellow
+        Write-Host "CSV: $csvPath" -ForegroundColor Yellow
+    } else {
+        Write-Host 'Строк о недоступных треках не обнаружено.' -ForegroundColor Green
+    }
+
+    Write-Host "Других диагностических строк: $($otherErrors.Count)"
+    $reportLines = New-Object 'System.Collections.Generic.List[string]'
+    [void]$reportLines.Add('Сводка анализа существующего журнала; скачивание не запускалось.')
+    [void]$reportLines.Add("Исходный лог: $logPath")
+    [void]$reportLines.Add("Недоступных уникальных позиций плейлиста: $($unavailableSummary.Count)")
+    [void]$reportLines.Add("Других строк с диагностическими признаками: $($otherErrors.Count)")
+    if ($unavailableSummary.Count -gt 0) { [void]$reportLines.Add("CSV недоступных треков: $csvPath") }
+    foreach ($errorLine in $otherErrors) { [void]$reportLines.Add([string]$errorLine) }
+    $reportLines | Out-File -FilePath $reportPath -Encoding utf8
+    Write-Host "Сводка: $reportPath" -ForegroundColor DarkGray
+}
+
 function Invoke-AlternativeTrack {
     Write-Host ''
     Write-Host 'РЕЗЕРВНЫЙ ЗАГРУЗЧИК ДЛЯ ОДНОГО ПРОБЛЕМНОГО ТРЕКА' -ForegroundColor Cyan
@@ -344,11 +417,17 @@ Write-Host '  1 — скачать музыку (обычный режим)'
 Write-Host '  2 — обновить загрузчик и выйти'
 Write-Host '  3 — обновить загрузчик и затем начать скачивание'
 Write-Host '  4 — попробовать резервный источник для одного проблемного трека (yt-dlp + сессия браузера)'
+Write-Host '  5 — создать отчёт по недоступным трекам из существующего лога (без скачивания)'
 Write-Host '  0 — выход'
-$actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4') '1'
+$actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5') '1'
 if ($actionChoice -eq '0') { exit 0 }
 if ($actionChoice -eq '4') {
     Invoke-AlternativeTrack
+    Read-Host 'Нажми Enter для выхода' | Out-Null
+    exit 0
+}
+if ($actionChoice -eq '5') {
+    Invoke-AnalyzeExistingLog
     Read-Host 'Нажми Enter для выхода' | Out-Null
     exit 0
 }
@@ -610,23 +689,7 @@ try {
 
     # Retries can repeat the same unavailable message. Keep one CSV row per playlist
     # position + displayed track, and preserve how many attempts reported it.
-    $unavailableSummary = @(
-        $allUnavailableEntries |
-            Group-Object -Property { '{0}/{1}|{2}' -f $_.TrackIndex, $_.PlaylistTotal, $_.Track } |
-            ForEach-Object {
-                $entryGroup = $_
-                $firstEntry = $entryGroup.Group[0]
-                [pscustomobject]@{
-                    TrackIndex    = $firstEntry.TrackIndex
-                    PlaylistTotal = $firstEntry.PlaylistTotal
-                    Track         = $firstEntry.Track
-                    Attempts      = $entryGroup.Count
-                    Passes        = (($entryGroup.Group | Select-Object -ExpandProperty Pass -Unique) -join '; ')
-                    Messages      = (($entryGroup.Group | Select-Object -ExpandProperty Message -Unique) -join ' | ')
-                }
-            } |
-            Sort-Object TrackIndex, Track
-    )
+    $unavailableSummary = @(Get-UnavailableTrackSummary -Entries $allUnavailableEntries)
 
     $errorReportPath = Join-Path $logsDir "errors-$($script:timestamp).txt"
     $unavailableReportPath = Join-Path $logsDir "unavailable-$($script:timestamp).csv"
