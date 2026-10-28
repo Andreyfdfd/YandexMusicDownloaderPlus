@@ -9,6 +9,13 @@
 - Include unavailable-track count and CSV path in `errors-*.txt`.
 - Add menu option 5 to analyse an existing download log without launching a downloader pass.
 
+## Implemented in `fix/dpapi-token-module-fallback`
+
+- Use the native Windows DPAPI API directly for saved-token load/save, bypassing `Microsoft.PowerShell.Security` module autoload.
+- Preserve the previous `ConvertFrom-SecureString` DPAPI hex format so the existing `%APPDATA%\\YandexMusicDownloaderPlus\\token.dpapi` can be reused without entering the token again.
+- Keep the token encrypted at rest; do not use plaintext token files as a workaround.
+- Still needs end-to-end verification on the user's Windows installation, including reading the existing token and saving/reusing it again.
+
 ## Remaining work
 
 ### 1. Summary statistics
