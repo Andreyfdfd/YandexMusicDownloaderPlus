@@ -1903,15 +1903,13 @@ try {
             Write-Host ''
             Write-Host 'Сверяю список треков источника для отчёта об удалённых и неудачных композициях...' -ForegroundColor Cyan
             $inventoryResult = Invoke-SourceInventory -SourceUrl $script:sourceUrl -PythonExe $inventoryPython
-            if ($inventoryResult.Success) {
+            if ($inventoryResult.Success -and $inventoryResult.Count -gt 0) {
                 $script:sourceInventorySucceeded = $true
                 $script:sourceInventoryRecords = @($inventoryResult.Tracks)
                 $sourceKey = Get-SourceSnapshotKey -SourceUrl $script:sourceUrl
                 $script:sourceBaselinePath = Join-Path $logsDir "source-baseline-$sourceKey.csv"
                 $runInventoryPath = Join-Path $logsDir "source-inventory-$($script:timestamp).csv"
-                if ($script:sourceInventoryRecords.Count -gt 0) {
-                    $script:sourceInventoryRecords | Export-Csv -LiteralPath $runInventoryPath -NoTypeInformation -Encoding UTF8
-                }
+                $script:sourceInventoryRecords | Export-Csv -LiteralPath $runInventoryPath -NoTypeInformation -Encoding UTF8
                 if (Test-Path -LiteralPath $script:sourceBaselinePath -PathType Leaf) {
                     $script:previousSourceInventory = @(Import-Csv -LiteralPath $script:sourceBaselinePath -ErrorAction SilentlyContinue)
                     $script:hasPreviousSourceInventory = $true
@@ -1920,9 +1918,10 @@ try {
                 Write-Host "В источнике найдено треков: $($script:sourceInventoryRecords.Count)" -ForegroundColor Green
                 Write-Host "Снимок запуска: $runInventoryPath" -ForegroundColor DarkGray
             } else {
-                Write-Host "Не удалось получить полный список треков источника: $($inventoryResult.Error)" -ForegroundColor Yellow
+                $inventoryError = if ($inventoryResult.Success) { 'Список источника вернулся пустым; снимок не обновлён, чтобы не помечать все старые треки как удалённые.' } else { [string]$inventoryResult.Error }
+                Write-Host "Не удалось получить полный список треков источника: $inventoryError" -ForegroundColor Yellow
                 Write-Host 'Загрузка продолжится; отчёт об удалённых из источника композициях в этом запуске будет неполным.' -ForegroundColor Gray
-                "Не удалось получить снимок источника: $($inventoryResult.Error)" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+                "Не удалось получить снимок источника: $inventoryError" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
             }
         }
 
