@@ -25,7 +25,8 @@ AUDIO_SUFFIXES = {".m4a", ".mp3", ".flac", ".aac", ".ogg", ".opus", ".wav", ".wm
 
 
 def hydrate_tracks(client, track_refs):
-    ids = [getattr(item, "id", None) for item in track_refs]
+    # TrackShort.track_id includes album_id when needed to disambiguate versions.
+    ids = [getattr(item, "track_id", None) or getattr(item, "id", None) for item in track_refs]
     ids = [str(value) for value in ids if value is not None]
     result = []
     for start in range(0, len(ids), BATCH_SIZE):
@@ -125,6 +126,7 @@ def track_record(track, index):
     return {
         "SourceIndex": index,
         "TrackId": str(track_id),
+        "TrackKey": f"{track_id}:{album_id}" if album_id is not None else str(track_id),
         "TrackTitle": title,
         "TrackLabel": f"{artists} - {getattr(track, 'title', title)}".strip(" -"),
         "Artists": artists,
