@@ -29,6 +29,8 @@ $script:forceMp3 = $false
 $script:formatName = 'AAC/M4A 192 kbps'
 $script:delay = '0'
 $script:lyricsChoice = '0'
+$script:resumeSettings = $null
+$script:resumeFromLog = $null
 
 # Use the native Windows DPAPI directly instead of importing Microsoft.PowerShell.Security.
 # Data stays compatible with ConvertFrom-SecureString's default DPAPI hex format.
@@ -300,6 +302,143 @@ function Test-SavedTokenRoundTrip {
         if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
             Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
         }
+    }
+}
+
+
+function Get-PreviousDownloadSettings([string]$LogPath) {
+    try { $logText = Get-Content -LiteralPath $LogPath -Raw -ErrorAction Stop }
+    catch { Write-Host "Не удалось прочитать лог: $LogPath" -ForegroundColor Red; return $null }
+
+    $urlMatch = [regex]::Match($logText, '(?m)^Ссылка:\s*(.+?)\s*$')
+    $outputMatch = [regex]::Match($logText, '(?m)^Папка:\s*(.+?)\s*$')
+    if (-not $urlMatch.Success -or -not $outputMatch.Success) {
+        Write-Host 'В логе не найдены ссылка или папка назначения. Повтор отменён.' -ForegroundColor Yellow
+        return $null
+    }
+    $url = $urlMatch.Groups[1].Value.Trim()
+    $outputDir = $outputMatch.Groups[1].Value.Trim()
+    $passUrlMatches = [regex]::Matches($logText, '(?m)^URL прохода:\s*(.+?)\s*$')
+    if ($passUrlMatches.Count -gt 0) {
+        $url = $passUrlMatches[$passUrlMatches.Count - 1].Groups[1].Value.Trim()
+    } else {
+        $alternateUrlMatches = [regex]::Matches($logText, '(?m)^Альтернативный URL после playlist-not-found:\s*(.+?)\s*$')
+        if ($alternateUrlMatches.Count -gt 0) { $url = $alternateUrlMatches[$alternateUrlMatches.Count - 1].Groups[1].Value.Trim() }
+    }
+    if ($url -notmatch '^https?://\S+') {
+        Write-Host 'В логе отсутствует корректная HTTP(S)-ссылка. Повтор отменён.' -ForegroundColor Yellow
+        return $null
+    }
+    if ([string]::IsNullOrWhiteSpace($outputDir)) {
+        Write-Host 'В логе не найдена папка назначения. Повтор отменён.' -ForegroundColor Yellow
+        return $null
+    }
+
+    $qualityMatches = [regex]::Matches($logText, '(?m)^Качество прохода:\s*(.+?)\s*$')
+    $formatMatches = [regex]::Matches($logText, '(?m)^Формат:\s*(.+?)\s*$')
+    $formatLabel = 'AAC/M4A 192 kbps'
+    if ($qualityMatches.Count -gt 0) { $formatLabel = $qualityMatches[$qualityMatches.Count - 1].Groups[1].Value.Trim() }
+    elseif ($formatMatches.Count -gt 0) { $formatLabel = $formatMatches[0].Groups[1].Value.Trim() }
+
+    $qualityValue = '1'
+    if ($formatLabel -match '(?i)\bFLAC\b') { $qualityValue = '2' }
+    $forceMp3 = $formatLabel -match '(?i)\bMP3\b'
+    if ($forceMp3) { $qualityValue = '1'; $formatLabel = 'MP3' }
+    elseif ($qualityValue -eq '2') { $formatLabel = 'FLAC (если lossless доступен для трека и аккаунта)' }
+    else { $formatLabel = 'AAC/M4A 192 kbps' }
+
+    return [pscustomobject]@{
+        LogPath = $LogPath
+        Url = $url
+        OutputDir = $outputDir
+        QualityValue = $qualityValue
+        ForceMp3 = [bool]$forceMp3
+        FormatName = $formatLabel
+    }
+}
+
+function Select-PreviousDownloadLog {
+    $logsDir = Join-Path $scriptRoot 'logs'
+    if (-not (Test-Path -LiteralPath $logsDir -PathType Container)) {
+        Write-Host 'Папка logs не найдена. Нет лога для повтора.' -ForegroundColor Yellow
+        return $null
+    }
+    $logs = @(Get-ChildItem -LiteralPath $logsDir -Filter 'download-*.log' -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 10)
+    if ($logs.Count -eq 0) {
+        Write-Host 'В папке logs пока нет файлов download-*.log.' -ForegroundColor Yellow
+        return $null
+    }
+
+    Write-Host ''
+    Write-Host 'Выбери предыдущий запуск. Показаны не более 10 последних логов:' -ForegroundColor Cyan
+    for ($i = 0; $i -lt $logs.Count; $i++) {
+        Write-Host ("  {0} — {1}  ({2})" -f ($i + 1), $logs[$i].LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'), $logs[$i].Name)
+    }
+    $choices = @('0')
+    for ($i = 1; $i -le $logs.Count; $i++) { $choices += [string]$i }
+    $selection = Read-MenuChoice 'Номер лога (0 — отмена)' $choices '1'
+    if ($selection -eq '0') { return $null }
+    $settings = Get-PreviousDownloadSettings -LogPath $logs[[int]$selection - 1].FullName
+    if ($null -eq $settings) { return $null }
+    return $settings
+}
+
+function Move-ZeroLengthAudioToQuarantine([string]$RootPath) {
+    if ([string]::IsNullOrWhiteSpace($RootPath) -or -not (Test-Path -LiteralPath $RootPath -PathType Container)) { return }
+    $extensions = @('.m4a', '.mp3', '.flac', '.aac', '.ogg', '.opus', '.wav', '.wma', '.aiff', '.ape')
+    $zeroFiles = @(Get-ChildItem -LiteralPath $RootPath -File -Recurse -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Length -eq 0 -and
+            $extensions -contains $_.Extension.ToLowerInvariant() -and
+            $_.FullName -notmatch '(?i)\\[^\\]*\._DownloaderPlus_Quarantine_[^\\]*\\'
+        })
+    if ($zeroFiles.Count -eq 0) { return }
+
+    Write-Host ''
+    Write-Host ("Найдено аудиофайлов нулевого размера: {0}." -f $zeroFiles.Count) -ForegroundColor Yellow
+    Write-Host 'Из-за --skip-existing загрузчик может пропустить их вместо повторной загрузки.' -ForegroundColor Gray
+    Write-Host 'При согласии они будут перемещены в карантин, не удалены.' -ForegroundColor Gray
+    $choice = Read-MenuChoice '0 — оставить на месте; 1 — перенести нулевые файлы в карантин' @('0','1') '0'
+    if ($choice -ne '1') {
+        Write-Host 'Нулевые файлы оставлены; загрузчик может их пропустить.' -ForegroundColor Yellow
+        return
+    }
+
+    try {
+        $fullRoot = [System.IO.Path]::GetFullPath($RootPath)
+        $trimmedRoot = $fullRoot.TrimEnd([char[]]@('\','/'))
+        if ($trimmedRoot -match '^[A-Za-z]:$') { $parent = "$trimmedRoot\"; $leaf = 'drive-root' }
+        else { $parent = Split-Path -Parent $trimmedRoot; $leaf = Split-Path -Leaf $trimmedRoot }
+
+        $qName = '{0}._DownloaderPlus_Quarantine_{1}' -f $leaf, (Get-Date -Format 'yyyyMMdd-HHmmss')
+        $qPath = Join-Path $parent $qName
+        if (Test-Path -LiteralPath $qPath) {
+            $qName = '{0}._DownloaderPlus_Quarantine_{1}_{2}' -f $leaf, (Get-Date -Format 'yyyyMMdd-HHmmss'), ([guid]::NewGuid().ToString('N').Substring(0,8))
+            $qPath = Join-Path $parent $qName
+        }
+
+        $moved = 0; $failed = 0
+        foreach ($file in $zeroFiles) {
+            $relative = $file.FullName.Substring($trimmedRoot.Length).TrimStart([char[]]@('\','/'))
+            $target = Join-Path $qPath $relative
+            try {
+                New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force -ErrorAction Stop | Out-Null
+                Move-Item -LiteralPath $file.FullName -Destination $target -ErrorAction Stop
+                $moved++
+            } catch {
+                $failed++
+                Write-Host "Не удалось переместить $($file.FullName): $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+        }
+        if ($moved -gt 0) {
+            Write-Host "Перемещено файлов: $moved. Папка карантина: $qPath" -ForegroundColor Green
+            Write-Host 'Файлы сохранены, автоматического удаления не было.' -ForegroundColor DarkGray
+        }
+        if ($failed -gt 0) { Write-Host "Не удалось переместить файлов: $failed. Они остаются на месте и могут быть пропущены." -ForegroundColor Yellow }
+    } catch {
+        Write-Host "Не удалось подготовить карантин: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host 'Файлы не удалялись автоматически.' -ForegroundColor DarkGray
     }
 }
 
@@ -905,8 +1044,9 @@ Write-Host '  4 — попробовать резервный источник �
 Write-Host '  5 — создать отчёт по недоступным трекам из существующего лога (без скачивания)'
 Write-Host '  6 — проверить расшифровку сохранённого токена (без загрузки и без вывода токена)'
 Write-Host '  7 — проверить шифрование и повторную расшифровку токена (без сети и без изменения сохранённого файла)'
+Write-Host '  8 — повторить незавершённую загрузку по предыдущему логу'
 Write-Host '  0 — выход'
-$actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5','6','7') '1'
+$actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5','6','7','8') '1'
 if ($actionChoice -eq '0') { exit 0 }
 if ($actionChoice -eq '4') {
     Invoke-AlternativeTrack
@@ -927,6 +1067,23 @@ if ($actionChoice -eq '7') {
     Test-SavedTokenRoundTrip
     Read-Host 'Нажми Enter для выхода' | Out-Null
     exit 0
+}
+if ($actionChoice -eq '8') {
+    $script:resumeSettings = Select-PreviousDownloadLog
+    if ($null -eq $script:resumeSettings) {
+        Read-Host 'Не удалось выбрать подходящий лог. Нажми Enter для выхода' | Out-Null
+        exit 1
+    }
+    $script:resumeFromLog = $script:resumeSettings.LogPath
+    Write-Host ''
+    Write-Host 'Повтор будет запущен по параметрам из выбранного лога:' -ForegroundColor Cyan
+    Write-Host "Лог:    $($script:resumeSettings.LogPath)" -ForegroundColor DarkGray
+    Write-Host "Ссылка: $($script:resumeSettings.Url)"
+    Write-Host "Папка:  $($script:resumeSettings.OutputDir)"
+    Write-Host "Качество по умолчанию: $($script:resumeSettings.FormatName)"
+    Write-Host 'Повтор использует --skip-existing; отсутствующие треки будут обработаны снова, существующие обычно пропускаются.' -ForegroundColor Gray
+    $confirmed = Read-MenuChoice 'Продолжить? (0 — отмена, 1 — да)' @('0','1') '1'
+    if ($confirmed -ne '1') { exit 0 }
 }
 
 $script:exePath = Find-Downloader -PreferredPath $defaultExe
@@ -983,9 +1140,15 @@ if (-not ($supportsQuality -and $supportsUrl -and $supportsToken -and $supportsD
 }
 
 Write-Host ''
-$sourceUrl = Read-DefaultText 'Ссылка на плейлист/альбом/исполнителя/отдельный трек' $defaultUrl
-$script:sourceUrl = $sourceUrl
-$script:outputDir = Read-DefaultText 'Папка для сохранения' $defaultDir
+if ($actionChoice -eq '8' -and $null -ne $script:resumeSettings) {
+    $script:sourceUrl = $script:resumeSettings.Url
+    $script:outputDir = $script:resumeSettings.OutputDir
+    Write-Host 'Для повтора используются ссылка и папка из выбранного лога.' -ForegroundColor Gray
+} else {
+    $sourceUrl = Read-DefaultText 'Ссылка на плейлист/альбом/исполнителя/отдельный трек' $defaultUrl
+    $script:sourceUrl = $sourceUrl
+    $script:outputDir = Read-DefaultText 'Папка для сохранения' $defaultDir
+}
 
 Write-Host ''
 Write-Host 'Выбор качества/формата:' -ForegroundColor Cyan
@@ -993,7 +1156,12 @@ if ($script:supportsForceMp3) {
     Write-Host '  1 — MP3 (только если поддерживается установленной версией)'
     Write-Host '  2 — AAC/M4A 192 кбит/с (как в исходной команде, без повторного перекодирования)'
     Write-Host '  3 — FLAC (если lossless доступен для трека и аккаунта)'
-    $formatChoice = Read-MenuChoice 'Формат' @('1','2','3') '2'
+    $formatDefaultChoice = '2'
+    if ($actionChoice -eq '8' -and $null -ne $script:resumeSettings) {
+        if ($script:resumeSettings.ForceMp3) { $formatDefaultChoice = '1' }
+        elseif ($script:resumeSettings.QualityValue -eq '2') { $formatDefaultChoice = '3' }
+    }
+    $formatChoice = Read-MenuChoice 'Формат' @('1','2','3') $formatDefaultChoice
     switch ($formatChoice) {
         '1' { $script:quality = '1'; $script:forceMp3 = $true;  $script:formatName = 'MP3' }
         '2' { $script:quality = '1'; $script:forceMp3 = $false; $script:formatName = 'AAC/M4A 192 kbps' }
@@ -1003,7 +1171,12 @@ if ($script:supportsForceMp3) {
     Write-Host '  1 — AAC/M4A 192 кбит/с (как в исходной команде)'
     Write-Host '  2 — FLAC (если lossless доступен для трека и аккаунта)'
     Write-Host '  (Установленная версия не предоставляет --force-mp3; MP3 не будет выдаваться за исходный формат.)' -ForegroundColor DarkYellow
-    $formatChoice = Read-MenuChoice 'Формат' @('1','2') '1'
+    $formatDefaultChoice = '1'
+    if ($actionChoice -eq '8' -and $null -ne $script:resumeSettings -and $script:resumeSettings.QualityValue -eq '2') { $formatDefaultChoice = '2' }
+    if ($actionChoice -eq '8' -and $null -ne $script:resumeSettings -and $script:resumeSettings.ForceMp3) {
+        Write-Host 'В старом логе указан MP3, но текущий загрузчик не поддерживает --force-mp3. Повтор будет в AAC/M4A или FLAC.' -ForegroundColor Yellow
+    }
+    $formatChoice = Read-MenuChoice 'Формат' @('1','2') $formatDefaultChoice
     switch ($formatChoice) {
         '1' { $script:quality = '1'; $script:forceMp3 = $false; $script:formatName = 'AAC/M4A 192 kbps' }
         '2' { $script:quality = '2'; $script:forceMp3 = $false; $script:formatName = 'FLAC' }
@@ -1103,6 +1276,7 @@ try {
     if (-not (Test-Path -LiteralPath $script:outputDir -PathType Container)) {
         New-Item -ItemType Directory -Path $script:outputDir -Force | Out-Null
     }
+    if ($actionChoice -eq '8') { [void](Move-ZeroLengthAudioToQuarantine -RootPath $script:outputDir) }
     $logsDir = Join-Path $scriptRoot 'logs'
     New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
     $script:timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -1117,6 +1291,9 @@ try {
         'Режим пропуска существующих файлов: включён'
         'Токен намеренно не записывается в лог.'
     ) | Out-File -FilePath $script:logPath -Encoding utf8
+    if (-not [string]::IsNullOrWhiteSpace($script:resumeFromLog)) {
+        "Повторная попытка по предыдущему логу: $($script:resumeFromLog)" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+    }
 
     Write-Host ''
     Write-Host "Формат: $($script:formatName)" -ForegroundColor Green

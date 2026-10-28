@@ -28,6 +28,13 @@
 - Export `file-outcomes-*.csv` with one row per reported audio path and every new/changed audio file found in the destination. Rows include observed status, whether the downloader mentioned the path, existence and size before/after, and last-write time.
 - Do not claim that a nonzero file is complete or playable based on size alone.
 
+## Implemented in `feature/retry-incomplete-download`
+
+- Add menu option 8 to select one of the ten most recent `download-*.log` files and retry using the URL and destination folder recorded in that log.
+- Prefer the last URL actually passed to the downloader and use the most recent logged quality as the default; allow the user to choose a different quality.
+- Keep `--skip-existing` enabled on every retry. Ask before moving zero-length audio files to a sibling quarantine directory so the downloader has a chance to recreate them; never delete them automatically.
+- Record the source log path in the new run log. Re-enter the saved DPAPI token through the normal token flow; the token is not copied from the old log.
+
 ## Remaining work
 
 ### 1. Reliable upstream counters and audio validation
@@ -36,9 +43,9 @@
 - File snapshots measure changes in the destination folder during the pass. They do not verify audio duration, decodability, tags, or whether another process changed a file concurrently.
 - Consider adding media-duration validation and a stronger success/failure signal if the upstream downloader exposes enough metadata.
 
-### 2. Resume and duplicate safety
+### 2. Detecting nonzero partial files
 
-Preserve `--skip-existing` and the existing directory/path pattern. Do not auto-delete local files. Any alternate-backend output should stay in a staging folder until the user verifies duration and tags.
+The retry menu handles missing files by rerunning the entire source with `--skip-existing`. Zero-byte audio files can be moved to quarantine after confirmation. A nonzero partial or corrupted audio file may still be treated as existing and skipped; automatic duration/decodability validation remains future work. Do not auto-delete local files. Any alternate-backend output should stay in a staging folder until the user verifies duration and tags.
 
 ### 3. Progress and logging
 
