@@ -7,6 +7,7 @@
 - Create `unavailable-*.csv` with playlist index, total, displayed track label, number of observed attempts, pass names, and raw message(s).
 - Make the end-of-pass summary warn when unavailable tracks were reported instead of claiming there were no detected problems.
 - Include unavailable-track count and CSV path in `errors-*.txt`.
+- Add menu option 5 to analyse an existing download log without launching a downloader pass.
 
 ## Remaining work
 
@@ -35,6 +36,7 @@ Keep live progress in the original terminal and ensure the same track-level outp
 - Existing file is skipped
 - Missing normal track downloads
 - Unavailable track is recorded as unavailable rather than general success
+- Menu option 5 analyses the prior log without asking for a token or starting a download
 - Repeated unavailable message from a retry becomes one CSV row with an attempts count
 - Expired/invalid token produces a clear auth error
 - Ctrl+C leaves files already completed intact
