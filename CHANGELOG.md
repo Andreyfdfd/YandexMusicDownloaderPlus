@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4 — 2026-10-28
+
+- Added a per-pass `file-outcomes-*.csv` report listing observed status for every path reported by the downloader and every new/changed audio file found in the output folder.
+- Added before/after existence and size, downloader-reported flag, and last-write time to each file outcome row.
+
 ## 0.1.3 — 2026-10-28
 
 - Added before/after snapshots of audio files for each download pass, reporting created, modified, and zero-length files.
