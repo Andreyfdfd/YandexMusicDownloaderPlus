@@ -422,6 +422,11 @@ function Get-DownloadPassFileStats([hashtable]$Before, [hashtable]$After, [strin
     $newAudioFiles = 0
     $modifiedAudioFiles = 0
     $zeroLengthAudioFiles = 0
+    $reportedPaths = @(Get-ReportedAudioPaths -Text $Text)
+    $reportedPathSet = @{}
+    $reportedPathsMissing = 0
+    $reportedPathsUnchanged = 0
+    $outcomeRows = New-Object 'System.Collections.Generic.List[object]'
 
     foreach ($path in $After.Keys) {
         $current = $After[$path]
@@ -445,24 +450,94 @@ function Get-DownloadPassFileStats([hashtable]$Before, [hashtable]$After, [strin
         }
     }
 
-    $reportedPaths = @(Get-ReportedAudioPaths -Text $Text)
-    $reportedPathsMissing = 0
-    $reportedPathsUnchanged = 0
-
     foreach ($reportedPath in $reportedPaths) {
-        if (-not $After.ContainsKey($reportedPath)) {
-            $reportedPathsMissing++
-            continue
+        $reportedPathSet[$reportedPath] = $true
+        $beforeExists = $Before.ContainsKey($reportedPath)
+        $afterExists = $After.ContainsKey($reportedPath)
+        $beforeBytes = $null
+        $afterBytes = $null
+        $lastWriteTime = $null
+        $status = ''
+
+        if ($beforeExists) { $beforeBytes = [long]$Before[$reportedPath].Length }
+        if ($afterExists) {
+            $afterFile = $After[$reportedPath]
+            $afterBytes = [long]$afterFile.Length
+            $lastWriteTime = $null
+            $item = Get-Item -LiteralPath $reportedPath -ErrorAction SilentlyContinue
+            if ($null -ne $item) { $lastWriteTime = $item.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss') }
         }
 
-        if ($Before.ContainsKey($reportedPath)) {
+        if (-not $afterExists) {
+            $status = 'Не найден после прохода'
+            $reportedPathsMissing++
+        } elseif ($After[$reportedPath].Length -le 0) {
+            $status = 'Нулевой размер'
+        } elseif (-not $beforeExists) {
+            $status = 'Создан во время прохода'
+        } else {
             $previous = $Before[$reportedPath]
             $current = $After[$reportedPath]
-            if (($current.Length -eq $previous.Length) -and
-                ($current.LastWriteTimeUtcTicks -eq $previous.LastWriteTimeUtcTicks)) {
+            $changed = ($current.Length -ne $previous.Length) -or
+                ($current.LastWriteTimeUtcTicks -ne $previous.LastWriteTimeUtcTicks)
+            if ($changed) {
+                $status = 'Изменён во время прохода'
+            } else {
+                $status = 'Изменение не обнаружено'
                 $reportedPathsUnchanged++
             }
         }
+
+        [void]$outcomeRows.Add([pscustomobject]@{
+            Path                   = $reportedPath
+            Status                 = $status
+            ReportedByDownloader   = $true
+            ExistedBefore          = $beforeExists
+            BeforeBytes            = $beforeBytes
+            ExistsAfter            = $afterExists
+            AfterBytes             = $afterBytes
+            LastWriteTime          = $lastWriteTime
+        })
+    }
+
+    # Include new/changed audio files even when no corresponding path appeared in stdout.
+    foreach ($path in $After.Keys) {
+        if ($reportedPathSet.ContainsKey($path)) { continue }
+
+        $current = $After[$path]
+        $wasPresent = $Before.ContainsKey($path)
+        $wasChanged = $false
+        if ($wasPresent) {
+            $previous = $Before[$path]
+            $wasChanged = ($current.Length -ne $previous.Length) -or
+                ($current.LastWriteTimeUtcTicks -ne $previous.LastWriteTimeUtcTicks)
+        }
+        if ($wasPresent -and -not $wasChanged) { continue }
+
+        $beforeBytes = $null
+        if ($wasPresent) { $beforeBytes = [long]$Before[$path].Length }
+        $item = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+        $lastWriteTime = $null
+        if ($null -ne $item) { $lastWriteTime = $item.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss') }
+
+        $status = if ($current.Length -le 0) {
+            'Нулевой размер'
+        } elseif (-not $wasPresent) {
+            'Создан, путь не показан загрузчиком'
+        } else {
+            'Изменён, путь не показан загрузчиком'
+        }
+
+        [void]$outcomeRows.Add([pscustomobject]@{
+            Path                   = $path
+            Status                 = $status
+            ReportedByDownloader   = $false
+            ExistedBefore          = $wasPresent
+            BeforeBytes            = $beforeBytes
+            ExistsAfter            = $true
+            AfterBytes             = [long]$current.Length
+            LastWriteTime          = $lastWriteTime
+        })
     }
 
     return [pscustomobject]@{
@@ -472,6 +547,8 @@ function Get-DownloadPassFileStats([hashtable]$Before, [hashtable]$After, [strin
         ReportedAudioPaths     = $reportedPaths.Count
         ReportedPathsMissing   = $reportedPathsMissing
         ReportedPathsUnchanged = $reportedPathsUnchanged
+        OutcomeRows            = @($outcomeRows.ToArray())
+        OutcomeCsvPath         = $null
     }
 }
 
@@ -522,7 +599,14 @@ function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
     $outputText = ($outputLines -join "`n")
     $fileStats = Get-DownloadPassFileStats -Before $beforeAudioFiles -After $afterAudioFiles -Text $outputText
 
-    @(
+    if (@($fileStats.OutcomeRows).Count -gt 0) {
+        $passSlug = ($PassName -replace '[^\p{L}\p{Nd}_-]+', '_').Trim('_')
+        $logDirectory = Split-Path -Parent $script:logPath
+        $fileStats.OutcomeCsvPath = Join-Path $logDirectory "file-outcomes-$($script:timestamp)-$passSlug.csv"
+        $fileStats.OutcomeRows | Export-Csv -LiteralPath $fileStats.OutcomeCsvPath -NoTypeInformation -Encoding UTF8
+    }
+
+    $statsLogLines = @(
         "Снимок аудиофайлов до/после прохода:"
         "Новых аудиофайлов с ненулевым размером: $($fileStats.NewAudioFiles)"
         "Изменённых аудиофайлов с ненулевым размером: $($fileStats.ModifiedAudioFiles)"
@@ -531,7 +615,11 @@ function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
         "Указанных путей, отсутствующих после прохода: $($fileStats.ReportedPathsMissing)"
         "Указанных путей без обнаруженного изменения: $($fileStats.ReportedPathsUnchanged)"
         "Точное число молча пропущенных файлов upstream не сообщает."
-    ) | Add-Content -LiteralPath $script:logPath -Encoding UTF8
+    )
+    if (-not [string]::IsNullOrWhiteSpace($fileStats.OutcomeCsvPath)) {
+        $statsLogLines += "CSV с пофайловыми результатами: $($fileStats.OutcomeCsvPath)"
+    }
+    $statsLogLines | Add-Content -LiteralPath $script:logPath -Encoding UTF8
 
     return [pscustomobject]@{
         ExitCode = [int]$exitCode
@@ -611,6 +699,9 @@ function Show-RunEnding([string]$Text, [int]$ExitCode, [object]$FileStats = $nul
         }
         if ($FileStats.ReportedPathsUnchanged -gt 0) {
             Write-Host "  Указанных путей без обнаруженного изменения файла: $($FileStats.ReportedPathsUnchanged)" -ForegroundColor Yellow
+        }
+        if (-not [string]::IsNullOrWhiteSpace($FileStats.OutcomeCsvPath)) {
+            Write-Host "  Подробный CSV по каждому пути: $($FileStats.OutcomeCsvPath)" -ForegroundColor DarkGray
         }
         Write-Host '  Точное число молча пропущенных существующих файлов загрузчик не сообщает.' -ForegroundColor DarkGray
     }
