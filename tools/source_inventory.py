@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -24,7 +25,7 @@ BATCH_SIZE = 10
 AUDIO_SUFFIXES = {".m4a", ".mp3", ".flac", ".aac", ".ogg", ".opus", ".wav", ".wma", ".aiff", ".ape"}
 
 
-def hydrate_tracks(client, track_refs):
+def hydrate_tracks(client, track_refs, delay_seconds=0.0):
     # TrackShort.track_id includes album_id when needed to disambiguate versions.
     ids = [getattr(item, "track_id", None) or getattr(item, "id", None) for item in track_refs]
     ids = [str(value) for value in ids if value is not None]
@@ -32,10 +33,12 @@ def hydrate_tracks(client, track_refs):
     for start in range(0, len(ids), BATCH_SIZE):
         batch = client.tracks(ids[start : start + BATCH_SIZE])
         result.extend(batch or [])
+        if delay_seconds > 0 and start + BATCH_SIZE < len(ids):
+            time.sleep(delay_seconds)
     return result
 
 
-def tracks_for_source(client, source_url):
+def tracks_for_source(client, source_url, delay_seconds=0.0):
     path = urlparse(source_url).path.rstrip("/")
 
     # Match the upstream CLI's URL interpretation order.
@@ -63,6 +66,8 @@ def tracks_for_source(client, source_url):
         album_ids = []
         while True:
             page_result = client.artists_direct_albums(artist_id, page=page, page_size=20)
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
             if not page_result or not page_result.albums:
                 break
             album_ids.extend(str(album.id) for album in page_result.albums if album.id is not None)
@@ -73,6 +78,8 @@ def tracks_for_source(client, source_url):
         tracks = []
         for album_id in album_ids:
             album = client.albums_with_tracks(album_id)
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
             if not album or not album.volumes:
                 continue
             for volume in album.volumes:
@@ -87,14 +94,18 @@ def tracks_for_source(client, source_url):
         playlist_id = playlist_match.group(1)
         if playlist_id.startswith("lk."):
             liked = client.users_likes_tracks()
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
             refs = getattr(liked, "tracks", None) or []
-            return hydrate_tracks(client, refs)
+            return hydrate_tracks(client, refs, delay_seconds)
 
         playlist = client.playlist(playlist_id)
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
         if playlist is None:
             raise RuntimeError("API не вернул плейлист по указанной ссылке.")
         refs = playlist.fetch_tracks() or []
-        return hydrate_tracks(client, refs)
+        return hydrate_tracks(client, refs, delay_seconds)
 
     raise RuntimeError(
         "Для ссылки не удалось определить источник. Поддерживаются ссылки на трек, альбом, "
@@ -144,7 +155,9 @@ def run_inventory(args):
         raise RuntimeError("Не получен токен через временную переменную окружения.")
     client = Client(token)
     client.init()
-    tracks = tracks_for_source(client, args.url)
+    if args.delay > 0:
+        time.sleep(args.delay)
+    tracks = tracks_for_source(client, args.url, args.delay)
     records = [track_record(track, index) for index, track in enumerate(tracks, start=1)]
 
     output = {
@@ -179,6 +192,7 @@ def main():
     inventory = sub.add_parser("inventory")
     inventory.add_argument("--url", required=True)
     inventory.add_argument("--output-json", required=True)
+    inventory.add_argument("--delay", type=float, default=0.0)
     inventory.set_defaults(handler=run_inventory)
     duration = sub.add_parser("duration")
     duration.add_argument("--path", required=True)
