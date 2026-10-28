@@ -44,11 +44,12 @@
 
 ## Remaining work
 
-### 1. Reliable upstream counters and audio validation
+### 1. Reliable upstream counters and source inventory
 
-- Exact counts of all playlist entries processed and existing files silently skipped remain unavailable unless the upstream downloader exposes them.
-- File snapshots measure changes in the destination folder during the pass. They do not verify audio duration, decodability, tags, or whether another process changed a file concurrently.
-- Consider adding media-duration validation and a stronger success/failure signal if the upstream downloader exposes enough metadata.
+- Exact counts of files silently skipped remain unavailable unless the upstream downloader exposes them.
+- Source inventory relies on the installed `yandex_music` API and only records changes after a first successful snapshot for the same URL. If the API cannot enumerate a source, downloading continues but the removal comparison is skipped.
+- Duration checks reject obvious short previews, but they do not prove that every frame, tag, or audio segment is correct. Audio should still be spot-checked when a track matters.
+- A nonzero but incomplete file already present before a recovery run is not replaced automatically; option 9 asks whether to preserve it or move it to quarantine.
 
 ### 2. Detecting nonzero partial files
 
