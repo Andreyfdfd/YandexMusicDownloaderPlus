@@ -25,6 +25,7 @@
 - Take a snapshot of audio files in the destination before and after each pass and report new, modified, and newly/modified zero-length audio files.
 - Parse distinct audio output paths reported by the downloader and report any reported paths that are absent after the pass or have no observed file change.
 - Append the same per-pass file summary to the download log.
+- Export `file-outcomes-*.csv` with one row per reported audio path and every new/changed audio file found in the destination. Rows include observed status, whether the downloader mentioned the path, existence and size before/after, and last-write time.
 - Do not claim that a nonzero file is complete or playable based on size alone.
 
 ## Remaining work
