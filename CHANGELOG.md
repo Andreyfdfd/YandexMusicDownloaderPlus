@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5 — 2026-10-28
+
+- Added menu option 8 to select a previous `download-*.log` and retry the recorded URL/output folder, defaulting to the last observed quality.
+- Preserved `--skip-existing` for retry runs and added an explicit, optional quarantine move for zero-length audio files; no files are automatically deleted.
+- Logged the source run used for each retry.
+
 ## 0.1.4 — 2026-10-28
 
 - Added a per-pass `file-outcomes-*.csv` report listing observed status for every path reported by the downloader and every new/changed audio file found in the output folder.
