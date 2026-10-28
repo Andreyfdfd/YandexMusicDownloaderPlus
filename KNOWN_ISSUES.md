@@ -38,7 +38,7 @@
 ## Implemented in `feature/failed-track-recovery`
 
 - Add a Python helper to enumerate tracks for supported source URLs through the installed `yandex_music` / `ymd` packages and save a per-run source inventory without storing the token in files or logs.
-- Compare the current inventory with the last snapshot for the exact same source URL and emit `library-status-*.csv` rows for removed-from-source tracks, unavailable tracks, and tracks whose reported path is missing or zero-length after a pass. Never delete local music files.
+- Compare the current inventory with the last snapshot for the exact same source URL and emit `library-status-*.csv` rows for removed-from-source tracks, unavailable tracks, and tracks whose reported path is missing, zero-length, or unchanged after a pass. Never delete local music files.
 - Add menu option 9 to build a retry queue from the selected run log, retry each track by direct URL through the main downloader, and offer the `yt-dlp` browser-session fallback for remaining failures.
 - Probe downloaded audio duration with Mutagen and compare it with source metadata. Put unverified/short alternate results in staging; quarantine a newly created primary result if its duration is invalid instead of silently replacing the target.
 
