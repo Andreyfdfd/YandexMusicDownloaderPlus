@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6 — 2026-10-28
+
+- Added source inventory snapshots and `library-status-*.csv` reports to list tracks removed from the same source since the previous snapshot and tracks known to have failed during a run.
+- Added menu option 9 to build a queue of failed tracks from a previous log, retry each track individually through the main downloader, and optionally try `yt-dlp` as a fallback.
+- Added duration checks using the downloader's installed Mutagen dependency; short or unverified fallback files are kept in staging instead of being silently added to the library.
+- Added a Python helper that reads the DPAPI-decoded token from a temporary process environment variable and never writes it to the inventory file or logs.
+
 ## 0.1.5 — 2026-10-28
 
 - Added menu option 8 to select a previous `download-*.log` and retry the recorded URL/output folder, defaulting to the last observed quality.
