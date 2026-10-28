@@ -18,7 +18,7 @@
 - Added menu option 7 to verify encrypt/write/read/decrypt round-trip through a temporary DPAPI file; the original saved-token file is not modified, and the temporary file is removed.
 - Windows test passed: menu option 6 decrypted the existing `token.dpapi`.
 - Windows one-track run passed: the saved token was reused and `Just Blue.m4a` was created with a nonzero size (6,980,159 bytes). The local test confirms the file exists; playback/duration should be checked by the user if validating audio integrity.
-- Still needs menu option 7 round-trip test on Windows.
+- Windows round-trip test passed: menu option 7 decrypted the saved token, encrypted it to a temporary DPAPI file, reloaded and decrypted it, and confirmed the values match. The original saved-token file was not modified; the temporary file was removed.
 
 ## Remaining work
 
