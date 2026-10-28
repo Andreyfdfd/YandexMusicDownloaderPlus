@@ -664,7 +664,7 @@ function Write-SourceStatusReport(
     $outcomeFiles = @(Get-ChildItem -LiteralPath $LogsDir -Filter "file-outcomes-$RunTimestamp-*.csv" -File -ErrorAction SilentlyContinue)
     foreach ($outcomeFile in $outcomeFiles) {
         foreach ($outcome in @(Import-Csv -LiteralPath $outcomeFile.FullName -ErrorAction SilentlyContinue)) {
-            if ($outcome.Status -notin @('Не найден после прохода','Нулевой размер')) { continue }
+            if ($outcome.Status -notin @('Не найден после прохода','Нулевой размер','Изменение не обнаружено')) { continue }
             $pathKey = Get-NormalizedAudioBasePath -Path ([string]$outcome.Path)
             $match = $null
             foreach ($track in @($CurrentInventory)) {
@@ -792,7 +792,7 @@ function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [st
 
     foreach ($outcomeFile in @(Get-ChildItem -LiteralPath $LogsDir -Filter "file-outcomes-$oldStamp-*.csv" -File -ErrorAction SilentlyContinue)) {
         foreach ($outcome in @(Import-Csv -LiteralPath $outcomeFile.FullName -ErrorAction SilentlyContinue)) {
-            if ($outcome.Status -notin @('Не найден после прохода','Нулевой размер')) { continue }
+            if ($outcome.Status -notin @('Не найден после прохода','Нулевой размер','Изменение не обнаружено')) { continue }
             $pathKey = Get-NormalizedAudioBasePath -Path ([string]$outcome.Path)
             $track = $null
             foreach ($item in $inventory) {
