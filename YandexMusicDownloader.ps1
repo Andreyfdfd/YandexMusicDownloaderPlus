@@ -1884,7 +1884,45 @@ try {
     Write-Host 'Уже существующие треки будут пропускаться. Повторные проходы используют тот же механизм защиты от дубликатов.' -ForegroundColor Cyan
     Write-Host 'Для остановки нажми Ctrl+C. Токен передаётся загрузчику как аргумент командной строки и поэтому может быть виден локальным средствам просмотра процессов.' -ForegroundColor DarkGray
 
-    $firstPass = Invoke-DownloadPass -PassName 'ПРОХОД 1' -QualityValue $script:quality
+    if ($actionChoice -eq '9') {
+        $recoveryPython = Find-PythonForDownloader -ExecutablePath $script:exePath -FallbackExecutablePath $defaultExe
+        Invoke-RetryFailedTracks -PreviousLogPath $script:resumeFromLog -PythonExe $recoveryPython -LogsDir $logsDir -RunTimestamp $script:timestamp
+    } else {
+        $script:sourceInventoryRecords = @()
+        $script:previousSourceInventory = @()
+        $script:sourceBaselinePath = $null
+        $script:hasPreviousSourceInventory = $false
+        $script:sourceInventorySucceeded = $false
+
+        if (@('1','3') -contains $actionChoice) {
+            $inventoryPython = Find-PythonForDownloader -ExecutablePath $script:exePath -FallbackExecutablePath $defaultExe
+            Write-Host ''
+            Write-Host 'Сверяю список треков источника для отчёта об удалённых и неудачных композициях...' -ForegroundColor Cyan
+            $inventoryResult = Invoke-SourceInventory -SourceUrl $script:sourceUrl -PythonExe $inventoryPython
+            if ($inventoryResult.Success) {
+                $script:sourceInventorySucceeded = $true
+                $script:sourceInventoryRecords = @($inventoryResult.Tracks)
+                $sourceKey = Get-SourceSnapshotKey -SourceUrl $script:sourceUrl
+                $script:sourceBaselinePath = Join-Path $logsDir "source-baseline-$sourceKey.csv"
+                $runInventoryPath = Join-Path $logsDir "source-inventory-$($script:timestamp).csv"
+                if ($script:sourceInventoryRecords.Count -gt 0) {
+                    $script:sourceInventoryRecords | Export-Csv -LiteralPath $runInventoryPath -NoTypeInformation -Encoding UTF8
+                }
+                if (Test-Path -LiteralPath $script:sourceBaselinePath -PathType Leaf) {
+                    $script:previousSourceInventory = @(Import-Csv -LiteralPath $script:sourceBaselinePath -ErrorAction SilentlyContinue)
+                    $script:hasPreviousSourceInventory = $true
+                }
+                "Снимок источника: $runInventoryPath" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+                Write-Host "В источнике найдено треков: $($script:sourceInventoryRecords.Count)" -ForegroundColor Green
+                Write-Host "Снимок запуска: $runInventoryPath" -ForegroundColor DarkGray
+            } else {
+                Write-Host "Не удалось получить полный список треков источника: $($inventoryResult.Error)" -ForegroundColor Yellow
+                Write-Host 'Загрузка продолжится; отчёт об удалённых из источника композициях в этом запуске будет неполным.' -ForegroundColor Gray
+                "Не удалось получить снимок источника: $($inventoryResult.Error)" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+            }
+        }
+
+        $firstPass = Invoke-DownloadPass -PassName 'ПРОХОД 1' -QualityValue $script:quality
     $hasErrors = Show-RunEnding -Text $firstPass.Text -ExitCode $firstPass.ExitCode -FileStats $firstPass.FileStats
     $lastPass = $firstPass
 
@@ -1984,7 +2022,12 @@ try {
     Write-Host 'Готово.' -ForegroundColor Green
     Write-Host "Полный лог: $($script:logPath)"
     Write-Host "Отчёт:     $errorReportPath"
+    if ($script:sourceInventorySucceeded) {
+        [void](Write-SourceStatusReport -CurrentInventory $script:sourceInventoryRecords -PreviousInventory $script:previousSourceInventory -HasPreviousInventory $script:hasPreviousSourceInventory -SourceUrl $script:sourceUrl -OutputDir $script:outputDir -LogText $allLogText -LogsDir $logsDir -RunTimestamp $script:timestamp -BaselinePath $script:sourceBaselinePath)
+    }
+
     Write-Host 'Если отдельный трек всё равно не скачался, запусти этот же скрипт с прямой ссылкой на сам трек — так проще отделить проблему конкретного трека от проблемы всего плейлиста.' -ForegroundColor DarkGray
+    }
 } catch {
     Write-Host "Ошибка запуска: $($_.Exception.Message)" -ForegroundColor Red
     if (-not [string]::IsNullOrWhiteSpace($script:logPath)) { Write-Host "Проверь лог: $($script:logPath)" }
