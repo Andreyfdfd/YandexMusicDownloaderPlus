@@ -105,6 +105,8 @@ def tracks_for_source(client, source_url, delay_seconds=0.0):
         if playlist is None:
             raise RuntimeError("API не вернул плейлист по указанной ссылке.")
         refs = playlist.fetch_tracks() or []
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
         return hydrate_tracks(client, refs, delay_seconds)
 
     raise RuntimeError(
