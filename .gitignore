@@ -1,0 +1,28 @@
+# Runtime logs and reports (may contain personal playlist URLs or diagnostic data)
+logs/
+*.log
+errors-*.txt
+fallback-*.log
+
+# Authentication / secrets
+*.dpapi
+*.token
+.env
+.env.*
+secrets/
+local-settings.ps1
+
+# Python/runtime/cache files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Local/editor/temporary files
+.vscode/
+.idea/
+*.tmp
+*.bak
+*.backup
+.DS_Store
+Thumbs.db
