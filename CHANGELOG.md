@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 — 2026-10-28
+
+- Replaced `ConvertTo-SecureString` / `ConvertFrom-SecureString` calls for token storage with a small wrapper around the native Windows DPAPI API.
+- Kept the existing DPAPI hex payload format for backward compatibility with the saved token file.
+- Avoided storing the token as plaintext to work around a PowerShell Security module loading failure.
+- Added a Windows end-to-end verification step for saved-token reuse.
+
 ## 0.1.1 — 2026-10-28
 
 - Fixed classification of upstream `не доступен для скачивания` messages.
