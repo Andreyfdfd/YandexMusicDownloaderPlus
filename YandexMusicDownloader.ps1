@@ -912,9 +912,12 @@ function Invoke-YtDlpRecoveryTrack([object]$Candidate, [string]$PythonExe, [stri
     }
     $exitCode = $LASTEXITCODE
     $files = @(Get-ChildItem -LiteralPath $trackStage -File -ErrorAction SilentlyContinue |
-        Where-Object { @('.m4a','.mp3','.flac','.aac','.ogg','.opus','.wav','.wma','.aiff','.ape') -contains $_.Extension.ToLowerInvariant() })
-    if ($exitCode -ne 0 -or $files.Count -eq 0) {
-        return [pscustomobject]@{ Success = $false; Path = ''; Details = "Резервный источник завершился с кодом $exitCode и не создал аудиофайл. Staging: $trackStage" }
+        Where-Object { @('.m4a','.mp3','.flac') -contains $_.Extension.ToLowerInvariant() })
+    if ($files.Count -eq 0) {
+        return [pscustomobject]@{ Success = $false; Path = ''; Details = "Резервный источник завершился с кодом $exitCode и не создал поддерживаемый аудиофайл. Staging: $trackStage" }
+    }
+    if ($exitCode -ne 0) {
+        Write-Host "yt-dlp завершился с кодом $exitCode, но оставил аудиофайл. Перед импортом проверю его читаемость и длительность." -ForegroundColor Yellow
     }
     $candidateFile = $files | Sort-Object Length -Descending | Select-Object -First 1
     if (@('.m4a','.mp3','.flac') -notcontains $candidateFile.Extension.ToLowerInvariant()) {
