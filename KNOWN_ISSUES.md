@@ -43,9 +43,9 @@
 - File snapshots measure changes in the destination folder during the pass. They do not verify audio duration, decodability, tags, or whether another process changed a file concurrently.
 - Consider adding media-duration validation and a stronger success/failure signal if the upstream downloader exposes enough metadata.
 
-### 2. Resume and duplicate safety
+### 2. Detecting nonzero partial files
 
-Preserve `--skip-existing` and the existing directory/path pattern. Do not auto-delete local files. Any alternate-backend output should stay in a staging folder until the user verifies duration and tags.
+The retry menu handles missing files by rerunning the entire source with `--skip-existing`. Zero-byte audio files can be moved to quarantine after confirmation. A nonzero partial or corrupted audio file may still be treated as existing and skipped; automatic duration/decodability validation remains future work. Do not auto-delete local files. Any alternate-backend output should stay in a staging folder until the user verifies duration and tags.
 
 ### 3. Progress and logging
 
