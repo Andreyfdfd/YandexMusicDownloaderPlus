@@ -322,12 +322,17 @@ function Get-PreviousDownloadSettings([string]$LogPath) {
     }
     $url = $urlMatch.Groups[1].Value.Trim()
     $outputDir = $outputMatch.Groups[1].Value.Trim()
-    $passUrlMatches = [regex]::Matches($logText, '(?m)^URL прохода:\s*(.+?)\s*$')
-    if ($passUrlMatches.Count -gt 0) {
-        $url = $passUrlMatches[$passUrlMatches.Count - 1].Groups[1].Value.Trim()
-    } else {
-        $alternateUrlMatches = [regex]::Matches($logText, '(?m)^Альтернативный URL после playlist-not-found:\s*(.+?)\s*$')
-        if ($alternateUrlMatches.Count -gt 0) { $url = $alternateUrlMatches[$alternateUrlMatches.Count - 1].Groups[1].Value.Trim() }
+    $isRecoveryRun = $logText -match '(?m)^Режим: последовательное восстановление треков \(пункт 9\)\s*$' -or
+        $logText -match '(?m)^Очередь восстановления по логу:'
+    # In a recovery log, each URL прохода is a single track; preserve the original source URL.
+    if (-not $isRecoveryRun) {
+        $passUrlMatches = [regex]::Matches($logText, '(?m)^URL прохода:\s*(.+?)\s*$')
+        if ($passUrlMatches.Count -gt 0) {
+            $url = $passUrlMatches[$passUrlMatches.Count - 1].Groups[1].Value.Trim()
+        } else {
+            $alternateUrlMatches = [regex]::Matches($logText, '(?m)^Альтернативный URL после playlist-not-found:\s*(.+?)\s*$')
+            if ($alternateUrlMatches.Count -gt 0) { $url = $alternateUrlMatches[$alternateUrlMatches.Count - 1].Groups[1].Value.Trim() }
+        }
     }
     if ($url -notmatch '^https?://\S+') {
         Write-Host 'В логе отсутствует корректная HTTP(S)-ссылка. Повтор отменён.' -ForegroundColor Yellow
@@ -761,6 +766,37 @@ function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [st
     $inventory = @()
     $hasOriginalInventory = $false
 
+    # Reusing a prior option-9 log should queue only unresolved candidates, not repeat successes.
+    $priorQueuePath = Join-Path $LogsDir "retry-queue-$oldStamp.csv"
+    $priorResultsPath = Join-Path $LogsDir "recovery-results-$oldStamp.csv"
+    if (Test-Path -LiteralPath $priorQueuePath -PathType Leaf) {
+        $priorQueue = @(Import-Csv -LiteralPath $priorQueuePath -ErrorAction SilentlyContinue)
+        $priorResults = @{}
+        if (Test-Path -LiteralPath $priorResultsPath -PathType Leaf) {
+            foreach ($resultRow in @(Import-Csv -LiteralPath $priorResultsPath -ErrorAction SilentlyContinue)) {
+                $resultKey = [string]$resultRow.TrackKey
+                if ([string]::IsNullOrWhiteSpace($resultKey)) { $resultKey = [string]$resultRow.TrackId }
+                if (-not [string]::IsNullOrWhiteSpace($resultKey)) { $priorResults[$resultKey] = $resultRow }
+            }
+        }
+        foreach ($candidate in $priorQueue) {
+            $candidateKey = [string]$candidate.TrackKey
+            if ([string]::IsNullOrWhiteSpace($candidateKey)) { $candidateKey = [string]$candidate.TrackId }
+            $previousResult = if ($priorResults.ContainsKey($candidateKey)) { $priorResults[$candidateKey] } else { $null }
+            if ($null -ne $previousResult -and $previousResult.Status -eq 'Успешно восстановлен') {
+                $present = @(Get-TrackAudioFiles -RootPath $OutputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
+                if ($present.Count -gt 0) { continue }
+                $detail = 'Файл ранее восстановлен, но теперь отсутствует; повторная попытка добавлена в очередь.'
+            } elseif ($null -ne $previousResult) {
+                $detail = 'Результат прошлой попытки: {0}. {1}' -f $previousResult.Status, $previousResult.Details
+            } else {
+                $detail = 'Предыдущая попытка была прервана до записи результата.'
+            }
+            Add-RetryCandidate -Queue $queue -Seen $seen -TrackRecord $candidate -Details $detail -FallbackLabel ([string]$candidate.TrackTitle)
+        }
+        return [pscustomobject]@{ Queue = @($queue.ToArray()); Error = ''; InventoryPath = $inventoryPath; ReportPath = $reportPath; Timestamp = $oldStamp; ReusedRecoveryQueue = $true }
+    }
+
     if (Test-Path -LiteralPath $inventoryPath -PathType Leaf) {
         $inventory = @(Import-Csv -LiteralPath $inventoryPath)
         $hasOriginalInventory = $inventory.Count -gt 0
@@ -904,8 +940,12 @@ function Invoke-YtDlpRecoveryTrack([object]$Candidate, [string]$PythonExe, [stri
 function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, [string]$LogsDir, [string]$RunTimestamp) {
     $queueResult = Get-RetryQueueFromLog -PreviousLogPath $PreviousLogPath -OutputDir $script:outputDir -PythonExe $PythonExe -LogsDir $LogsDir
     if ($queueResult.Queue.Count -eq 0) {
-        Write-Host 'В выбранном запуске не удалось составить очередь отдельных треков для повтора.' -ForegroundColor Yellow
-        Write-Host 'Для старого лога без source-inventory CSV может потребоваться сначала повторный обычный запуск, чтобы создать точный снимок источника.' -ForegroundColor Gray
+        if ($queueResult.ReusedRecoveryQueue) {
+            Write-Host 'В предыдущей очереди не осталось треков для повторного восстановления.' -ForegroundColor Green
+        } else {
+            Write-Host 'В выбранном запуске не удалось составить очередь отдельных треков для повтора.' -ForegroundColor Yellow
+            Write-Host 'Для старого лога без source-inventory CSV может потребоваться обычный запуск, чтобы создать точный снимок источника.' -ForegroundColor Gray
+        }
         return
     }
     $queue = @($queueResult.Queue)
@@ -963,7 +1003,7 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
         Write-Host ("[{0}/{1}] {2} — {3}" -f ($i + 1), $queue.Count, $candidate.Artists, $candidate.TrackTitle) -ForegroundColor Cyan
         $existingNow = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
         if ($existingNow.Count -gt 0) {
-            [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; Track = $candidate.TrackTitle; Status = 'Пропущен: локальный файл оставлен'; Method = ''; Path = $existingNow[0].FullName; Details = 'Не перезаписывался, потому что локальный файл оставлен пользователем.' })
+            [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = 'Пропущен: локальный файл оставлен'; Method = ''; Path = $existingNow[0].FullName; Details = 'Не перезаписывался, потому что локальный файл оставлен пользователем.' })
             Write-Host 'У кандидата всё ещё есть локальный файл; по соображениям безопасности он не перезаписывается.' -ForegroundColor Yellow
             continue
         }
@@ -1005,14 +1045,14 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
                 'Аудиофайл читается, но длительность в метаданных источника неизвестна; проверь вручную.'
             }
             $recoveryStatus = if ($verified.Probe.ValidAgainstMetadata) { 'Успешно восстановлен' } else { 'Скачан, нужна ручная проверка' }
-            [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; Track = $candidate.TrackTitle; Status = $recoveryStatus; Method = 'Основной загрузчик'; Path = $verified.File.FullName; Details = $detail })
+            [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = $recoveryStatus; Method = 'Основной загрузчик'; Path = $verified.File.FullName; Details = $detail })
             Write-Host $detail -ForegroundColor Green
             continue
         }
 
         $stillExisting = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
         if ($stillExisting.Count -gt 0) {
-            [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; Track = $candidate.TrackTitle; Status = 'Требует ручной проверки'; Method = 'Основной загрузчик'; Path = $stillExisting[0].FullName; Details = 'Файл появился, но его длительность не удалось подтвердить; он оставлен на диске.' })
+            [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = 'Требует ручной проверки'; Method = 'Основной загрузчик'; Path = $stillExisting[0].FullName; Details = 'Файл появился, но его длительность не удалось подтвердить; он оставлен на диске.' })
             continue
         }
 
@@ -1025,7 +1065,7 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
             try {
                 $alternate = Invoke-YtDlpRecoveryTrack -Candidate $candidate -PythonExe $fallback.PythonExe -Browser $fallback.Browser -StagingRoot $stagingRoot
                 if ($alternate.Success) {
-                    [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; Track = $candidate.TrackTitle; Status = 'Успешно восстановлен'; Method = 'yt-dlp / резервный источник'; Path = $alternate.Path; Details = $alternate.Details })
+                    [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = 'Успешно восстановлен'; Method = 'yt-dlp / резервный источник'; Path = $alternate.Path; Details = $alternate.Details })
                     Write-Host $alternate.Details -ForegroundColor Green
                     continue
                 }
@@ -1037,7 +1077,7 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
         } else {
             $alternateDetails = 'Резервный источник не был включён или не удалось установить yt-dlp.'
         }
-        [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; Track = $candidate.TrackTitle; Status = 'Не удалось восстановить'; Method = 'Основной + резервный'; Path = ''; Details = "$alternateDetails; причина первой неудачи: $($pass.Text -join ' ')" })
+        [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = 'Не удалось восстановить'; Method = 'Основной + резервный'; Path = ''; Details = "$alternateDetails; причина первой неудачи: $($pass.Text -join ' ')" })
         Write-Host "Не удалось восстановить: $($candidate.TrackTitle)" -ForegroundColor Red
     }
 
@@ -1911,6 +1951,9 @@ try {
     ) | Out-File -FilePath $script:logPath -Encoding utf8
     if (-not [string]::IsNullOrWhiteSpace($script:resumeFromLog)) {
         "Повторная попытка по предыдущему логу: $($script:resumeFromLog)" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+    }
+    if ($actionChoice -eq '9') {
+        'Режим: последовательное восстановление треков (пункт 9)' | Out-File -FilePath $script:logPath -Encoding utf8 -Append
     }
 
     Write-Host ''
