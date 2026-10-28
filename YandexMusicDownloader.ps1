@@ -538,6 +538,7 @@ using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security;
+using System.Security.Cryptography;
 
 namespace YandexMusicDownloaderPlus
 {
