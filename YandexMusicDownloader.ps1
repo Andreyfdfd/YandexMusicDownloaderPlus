@@ -164,24 +164,65 @@ function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
     }
 }
 
+function Get-UnavailableTrackEntries([string]$Text) {
+    if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
+
+    $entries = New-Object 'System.Collections.Generic.List[object]'
+    $currentPass = ''
+    # Known output observed in live runs:
+    # [1866/6737] Трек Didier Marouani, Space - Just Blue не доступен для скачивания
+    $pattern = '(?i)^\s*\[(?<Index>\d+)\s*/\s*(?<Total>\d+)\]\s*(?:Трек\s+)?(?<Track>.+?)\s+(?<Message>не\s+доступен\s+для\s+скачивания|недоступен\s+для\s+скачивания|недоступна\s+для\s+скачивания|недоступно\s+для\s+скачивания|not\s+available\s+for\s+download|unavailable\s+for\s+download)\s*$'
+
+    foreach ($line in [regex]::Split($Text, '\r?\n')) {
+        if ($line -match '^\s*=+\s*(?<Pass>.+?)\s*=+\s*$') {
+            $currentPass = $Matches['Pass'].Trim()
+            continue
+        }
+        if ($line -match $pattern) {
+            [void]$entries.Add([pscustomobject]@{
+                TrackIndex    = [int]$Matches['Index']
+                PlaylistTotal = [int]$Matches['Total']
+                Track         = $Matches['Track'].Trim()
+                Message       = $line.Trim()
+                Pass          = $currentPass
+            })
+        }
+    }
+    return @($entries.ToArray())
+}
+
 function Get-ErrorLines([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
-    $pattern = '(?i)(Traceback|Unhandled exception|\bException\b|^\s*(?:ERROR|FATAL)\b|ошиб(?:ка|ки|ок)|не удалось|невозможно|недоступ|unavailable|smart_preview|preview stream|\bfailed\b|HTTP\s+(?:403|404|429|5\d\d))'
+    $pattern = '(?i)(Traceback|Unhandled exception|\bException\b|^\s*(?:ERROR|FATAL)\b|ошиб(?:ка|ки|ок)|не удалось|невозможно|недоступ|smart_preview|preview stream|\bfailed\b|HTTP\s+(?:403|404|429|5\d\d))'
+    $knownUnavailablePattern = '(?i)(?:не\s+доступен|недоступен|недоступна|недоступно)\s+для\s+скачивания|not\s+available\s+for\s+download|unavailable\s+for\s+download'
     $lines = [regex]::Split($Text, '\r?\n')
-    $matches = @($lines | Where-Object {
-        ($_ -match $pattern) -and ($_ -notmatch '(?i)\b0\s+failed\b|(?:ошибок|ошибки)\s*[:=]?\s*0')
+    $errorLinesFound = @($lines | Where-Object {
+        ($_ -match $pattern) -and
+        ($_ -notmatch $knownUnavailablePattern) -and
+        ($_ -notmatch '(?i)\b0\s+failed\b|(?:ошибок|ошибки)\s*[:=]?\s*0')
     })
-    return $matches
+    return $errorLinesFound
 }
 
 function Show-RunEnding([string]$Text, [int]$ExitCode) {
     $errorLines = @(Get-ErrorLines -Text $Text)
-    if ($ExitCode -eq 0 -and $errorLines.Count -eq 0) {
-        Write-Host 'Загрузчик завершил проход без обнаруженных по тексту ошибок.' -ForegroundColor Green
+    $unavailableEntries = @(Get-UnavailableTrackEntries -Text $Text)
+
+    if ($ExitCode -ne 0 -or $errorLines.Count -gt 0) {
+        Write-Host "Возможные ошибки обнаружены (код завершения: $ExitCode; строк с другими диагностическими признаками: $($errorLines.Count))." -ForegroundColor Yellow
+        if ($unavailableEntries.Count -gt 0) {
+            Write-Host "Дополнительно загрузчик сообщил о недоступности $($unavailableEntries.Count) треков. Они будут внесены в отдельный CSV-отчёт." -ForegroundColor Yellow
+        }
+        Write-Host 'Не каждая диагностическая строка означает сбой всего прохода; полный лог сохранён.' -ForegroundColor DarkGray
+    } elseif ($unavailableEntries.Count -gt 0) {
+        Write-Host "Проход завершён, но загрузчик сообщил о недоступности $($unavailableEntries.Count) треков. Они не считаются успешно скачанными." -ForegroundColor Yellow
+        Write-Host 'Список недоступных треков будет сохранён в CSV-отчёт.' -ForegroundColor DarkGray
     } else {
-        Write-Host "Возможные ошибки обнаружены (код завершения: $ExitCode; строк с диагностическими признаками: $($errorLines.Count))." -ForegroundColor Yellow
-        Write-Host 'Не каждая такая строка означает, что трек не скачался; полный лог сохранён.' -ForegroundColor DarkGray
+        Write-Host 'Загрузчик завершил проход без обнаруженных по тексту ошибок.' -ForegroundColor Green
     }
+
+    # Return only actionable/general errors. Unavailable tracks are recorded separately
+    # and do not by themselves trigger an automatic retry of the entire playlist.
     return ($ExitCode -ne 0 -or $errorLines.Count -gt 0)
 }
 
@@ -296,7 +337,7 @@ Clear-Host
 Write-Host '====================================================' -ForegroundColor Cyan
 Write-Host '   Яндекс Музыка — Downloader Plus' -ForegroundColor Cyan
 Write-Host '====================================================' -ForegroundColor Cyan
-Write-Host 'Токен спрашивается отдельно и не записывается в файлы скрипта.' -ForegroundColor Gray
+Write-Host 'Токен вводится скрыто; по желанию сохраняется зашифрованным средствами Windows DPAPI.' -ForegroundColor Gray
 Write-Host ''
 Write-Host 'Режим:'
 Write-Host '  1 — скачать музыку (обычный режим)'
@@ -564,20 +605,61 @@ try {
     }
 
     $allLogText = Get-Content -LiteralPath $script:logPath -Raw -ErrorAction SilentlyContinue
-    $errorSummary = @(Get-ErrorLines -Text $allLogText)
+    $otherErrorSummary = @(Get-ErrorLines -Text $allLogText)
+    $allUnavailableEntries = @(Get-UnavailableTrackEntries -Text $allLogText)
+
+    # Retries can repeat the same unavailable message. Keep one CSV row per playlist
+    # position + displayed track, and preserve how many attempts reported it.
+    $unavailableSummary = @(
+        $allUnavailableEntries |
+            Group-Object -Property { '{0}/{1}|{2}' -f $_.TrackIndex, $_.PlaylistTotal, $_.Track } |
+            ForEach-Object {
+                $entryGroup = $_
+                $firstEntry = $entryGroup.Group[0]
+                [pscustomobject]@{
+                    TrackIndex    = $firstEntry.TrackIndex
+                    PlaylistTotal = $firstEntry.PlaylistTotal
+                    Track         = $firstEntry.Track
+                    Attempts      = $entryGroup.Count
+                    Passes        = (($entryGroup.Group | Select-Object -ExpandProperty Pass -Unique) -join '; ')
+                    Messages      = (($entryGroup.Group | Select-Object -ExpandProperty Message -Unique) -join ' | ')
+                }
+            } |
+            Sort-Object TrackIndex, Track
+    )
+
     $errorReportPath = Join-Path $logsDir "errors-$($script:timestamp).txt"
-    if ($errorSummary.Count -gt 0) {
-        @(
-            'Возможные ошибки из лога. Некоторые совпадения могут быть предупреждениями; для точной диагностики смотри полный лог.'
-            "Полный лог: $($script:logPath)"
-            ''
-            $errorSummary
-        ) | Out-File -FilePath $errorReportPath -Encoding utf8
+    $unavailableReportPath = Join-Path $logsDir "unavailable-$($script:timestamp).csv"
+
+    if ($unavailableSummary.Count -gt 0) {
+        $unavailableSummary | Export-Csv -LiteralPath $unavailableReportPath -NoTypeInformation -Encoding UTF8
         Write-Host ''
-        Write-Host "Отчёт по возможным ошибкам: $errorReportPath" -ForegroundColor Yellow
+        Write-Host "Недоступных уникальных позиций плейлиста: $($unavailableSummary.Count)" -ForegroundColor Yellow
+        Write-Host "CSV со списком недоступных треков: $unavailableReportPath" -ForegroundColor Yellow
     } else {
-        'Автоматический фильтр не нашёл явных строк ошибок. Полный лог: ' + $script:logPath | Out-File -FilePath $errorReportPath -Encoding utf8
+        Write-Host ''
+        Write-Host 'Строк о недоступных треках не обнаружено.' -ForegroundColor Green
     }
+
+    $reportLines = New-Object 'System.Collections.Generic.List[string]'
+    [void]$reportLines.Add('Сводка автоматического анализа текущего запуска.')
+    [void]$reportLines.Add("Недоступных уникальных позиций плейлиста: $($unavailableSummary.Count)")
+    [void]$reportLines.Add("Других строк с диагностическими признаками: $($otherErrorSummary.Count)")
+    [void]$reportLines.Add("Полный лог: $($script:logPath)")
+    if ($unavailableSummary.Count -gt 0) {
+        [void]$reportLines.Add("CSV недоступных треков: $unavailableReportPath")
+    }
+    if ($otherErrorSummary.Count -gt 0) {
+        [void]$reportLines.Add('')
+        [void]$reportLines.Add('Другие диагностические строки (могут включать предупреждения):')
+        foreach ($errorLine in $otherErrorSummary) {
+            [void]$reportLines.Add([string]$errorLine)
+        }
+    }
+    if ($unavailableSummary.Count -eq 0 -and $otherErrorSummary.Count -eq 0) {
+        [void]$reportLines.Add('Явных диагностических строк автоматический фильтр не обнаружил.')
+    }
+    $reportLines | Out-File -FilePath $errorReportPath -Encoding utf8
 
     Write-Host ''
     Write-Host 'Готово.' -ForegroundColor Green
