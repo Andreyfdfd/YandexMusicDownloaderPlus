@@ -510,7 +510,8 @@ function Get-TrackAudioFiles([string]$RootPath, [string]$RelativeBasePath) {
     $directory = Split-Path -Parent $basePath
     $baseName = Split-Path -Leaf $basePath
     if ([string]::IsNullOrWhiteSpace($directory) -or -not (Test-Path -LiteralPath $directory -PathType Container)) { return @() }
-    $extensions = @('.m4a','.mp3','.flac','.aac','.ogg','.opus','.wav','.wma','.aiff','.ape')
+    # Only formats that this upstream downloader recognizes for --skip-existing.
+    $extensions = @('.m4a','.mp3','.flac')
     return @(Get-ChildItem -LiteralPath $directory -File -ErrorAction SilentlyContinue |
         Where-Object {
             ([System.IO.Path]::GetFileNameWithoutExtension($_.Name) -ieq $baseName) -and
