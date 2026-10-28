@@ -410,7 +410,7 @@ Clear-Host
 Write-Host '====================================================' -ForegroundColor Cyan
 Write-Host '   Яндекс Музыка — Downloader Plus' -ForegroundColor Cyan
 Write-Host '====================================================' -ForegroundColor Cyan
-Write-Host 'Токен вводится скрыто; по желанию сохраняется зашифрованным средствами Windows DPAPI.' -ForegroundColor Gray
+Write-Host 'Токен вводится скрыто; сохранение использует Windows DPAPI и не требует модуля Microsoft.PowerShell.Security.' -ForegroundColor Gray
 Write-Host ''
 Write-Host 'Режим:'
 Write-Host '  1 — скачать музыку (обычный режим)'
@@ -530,6 +530,169 @@ if ($script:supportsDelay) {
     $script:delay = Read-MenuChoice 'Задержка в секундах' @('0','1') '0'
 }
 
+# Use the native Windows DPAPI directly instead of importing Microsoft.PowerShell.Security.
+# Data stays compatible with ConvertFrom-SecureString's default DPAPI hex format.
+if (-not ('YandexMusicDownloaderPlus.DpapiTokenStore' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security;
+
+namespace YandexMusicDownloaderPlus
+{
+    public static class DpapiTokenStore
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct DATA_BLOB
+        {
+            public int cbData;
+            public IntPtr pbData;
+        }
+
+        [DllImport("crypt32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CryptProtectData(
+            ref DATA_BLOB pDataIn, string szDataDescr, IntPtr pOptionalEntropy,
+            IntPtr pvReserved, IntPtr pPromptStruct, uint dwFlags, out DATA_BLOB pDataOut);
+
+        [DllImport("crypt32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CryptUnprotectData(
+            ref DATA_BLOB pDataIn, IntPtr ppszDataDescr, IntPtr pOptionalEntropy,
+            IntPtr pvReserved, IntPtr pPromptStruct, uint dwFlags, out DATA_BLOB pDataOut);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr LocalFree(IntPtr hMem);
+
+        private const uint CRYPTPROTECT_UI_FORBIDDEN = 0x1;
+
+        private static byte[] Transform(byte[] inputBytes, bool protect)
+        {
+            GCHandle pinned = new GCHandle();
+            DATA_BLOB output = new DATA_BLOB();
+            try
+            {
+                pinned = GCHandle.Alloc(inputBytes, GCHandleType.Pinned);
+                DATA_BLOB input = new DATA_BLOB();
+                input.cbData = inputBytes.Length;
+                input.pbData = pinned.AddrOfPinnedObject();
+
+                bool ok;
+                if (protect)
+                {
+                    ok = CryptProtectData(ref input, String.Empty, IntPtr.Zero,
+                        IntPtr.Zero, IntPtr.Zero, CRYPTPROTECT_UI_FORBIDDEN, out output);
+                }
+                else
+                {
+                    ok = CryptUnprotectData(ref input, IntPtr.Zero, IntPtr.Zero,
+                        IntPtr.Zero, IntPtr.Zero, CRYPTPROTECT_UI_FORBIDDEN, out output);
+                }
+
+                if (!ok)
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows DPAPI operation failed.");
+
+                byte[] result = new byte[output.cbData];
+                if (result.Length > 0)
+                    Marshal.Copy(output.pbData, result, 0, result.Length);
+                return result;
+            }
+            finally
+            {
+                if (output.pbData != IntPtr.Zero)
+                {
+                    if (output.cbData > 0)
+                    {
+                        byte[] zeros = new byte[output.cbData];
+                        Marshal.Copy(zeros, 0, output.pbData, zeros.Length);
+                    }
+                    LocalFree(output.pbData);
+                }
+
+                if (pinned.IsAllocated)
+                    pinned.Free();
+            }
+        }
+
+        private static string ToHex(byte[] bytes)
+        {
+            return BitConverter.ToString(bytes).Replace("-", String.Empty).ToLowerInvariant();
+        }
+
+        private static byte[] FromHex(string hex)
+        {
+            if (String.IsNullOrWhiteSpace(hex) || (hex.Length % 2) != 0)
+                throw new FormatException("The DPAPI token file is empty or malformed.");
+
+            byte[] bytes = new byte[hex.Length / 2];
+            for (int i = 0; i < bytes.Length; i++)
+                bytes[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
+            return bytes;
+        }
+
+        public static string ProtectSecureString(SecureString value)
+        {
+            if (value == null || value.Length == 0)
+                throw new ArgumentException("Token is empty.", "value");
+
+            byte[] clear = new byte[value.Length * 2];
+            byte[] protectedBytes = null;
+            IntPtr ptr = IntPtr.Zero;
+            try
+            {
+                ptr = Marshal.SecureStringToCoTaskMemUnicode(value);
+                Marshal.Copy(ptr, clear, 0, clear.Length);
+                protectedBytes = Transform(clear, true);
+                return ToHex(protectedBytes);
+            }
+            finally
+            {
+                if (ptr != IntPtr.Zero)
+                    Marshal.ZeroFreeCoTaskMemUnicode(ptr);
+                Array.Clear(clear, 0, clear.Length);
+                if (protectedBytes != null)
+                    Array.Clear(protectedBytes, 0, protectedBytes.Length);
+            }
+        }
+
+        public static SecureString UnprotectToSecureString(string hex)
+        {
+            byte[] protectedBytes = null;
+            byte[] clear = null;
+            SecureString result = new SecureString();
+            try
+            {
+                protectedBytes = FromHex(hex.Trim());
+                clear = Transform(protectedBytes, false);
+                if ((clear.Length % 2) != 0)
+                    throw new CryptographicException("Decrypted DPAPI payload is not valid UTF-16 data.");
+
+                for (int i = 0; i < clear.Length; i += 2)
+                {
+                    char ch = (char)(clear[i] | (clear[i + 1] << 8));
+                    result.AppendChar(ch);
+                }
+
+                result.MakeReadOnly();
+                return result;
+            }
+            catch
+            {
+                result.Dispose();
+                throw;
+            }
+            finally
+            {
+                if (protectedBytes != null)
+                    Array.Clear(protectedBytes, 0, protectedBytes.Length);
+                if (clear != null)
+                    Array.Clear(clear, 0, clear.Length);
+            }
+        }
+    }
+}
+'@ -ErrorAction Stop
+}
+
 # Persistent token storage: Windows DPAPI, bound to the current Windows user profile.
 # The token is encrypted at rest and never written in plaintext to the script or logs.
 $tokenStoreDir = Join-Path $env:APPDATA 'YandexMusicDownloaderPlus'
@@ -545,7 +708,7 @@ if (Test-Path -LiteralPath $tokenStorePath -PathType Leaf) {
         if ([string]::IsNullOrWhiteSpace($storedCiphertext)) {
             throw 'Файл сохранённого токена пуст.'
         }
-        $candidateToken = ConvertTo-SecureString -String $storedCiphertext -ErrorAction Stop
+        $candidateToken = [YandexMusicDownloaderPlus.DpapiTokenStore]::UnprotectToSecureString($storedCiphertext)
         Write-Host ''
         Write-Host 'Найден сохранённый токен, зашифрованный для текущего пользователя Windows.' -ForegroundColor Cyan
         $savedTokenChoice = Read-Host 'Enter — использовать его; N — ввести новый; D — удалить сохранённый и ввести новый [Enter/N/D]'
@@ -563,7 +726,7 @@ if (Test-Path -LiteralPath $tokenStorePath -PathType Leaf) {
             }
         }
     } catch {
-        Write-Host "Не удалось прочитать сохранённый токен: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "Не удалось расшифровать сохранённый токен через Windows DPAPI: $($_.Exception.Message)" -ForegroundColor Yellow
         Write-Host 'Введи токен заново. При сохранении файл будет заменён.' -ForegroundColor DarkGray
     }
 }
@@ -581,12 +744,12 @@ if (-not $useSavedToken) {
     if ($saveToken) {
         try {
             New-Item -ItemType Directory -Path $tokenStoreDir -Force -ErrorAction Stop | Out-Null
-            $encryptedToken = ConvertFrom-SecureString -SecureString $secureToken -ErrorAction Stop
+            $encryptedToken = [YandexMusicDownloaderPlus.DpapiTokenStore]::ProtectSecureString($secureToken)
             Set-Content -LiteralPath $tokenStorePath -Value $encryptedToken -Encoding ASCII -ErrorAction Stop
             Write-Host "Токен сохранён в зашифрованном виде: $tokenStorePath" -ForegroundColor Green
             Write-Host 'Он не хранится в открытом виде в папке проекта или журнале.' -ForegroundColor DarkGray
         } catch {
-            Write-Host "Не удалось сохранить токен: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "Не удалось сохранить токен через Windows DPAPI: $($_.Exception.Message)" -ForegroundColor Yellow
             Write-Host 'Продолжаю работу без сохранения токена.' -ForegroundColor DarkGray
         }
     } else {
