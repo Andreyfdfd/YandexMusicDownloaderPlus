@@ -956,10 +956,14 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
                 $verified = [pscustomobject]@{ File = $file; Probe = $probe }
                 break
             }
-            if ($probe.Success -and -not $probe.ValidAgainstMetadata) {
-                Write-Host ("Полученный файл подозрительно отличается по длительности ({0:N1} с); переносить его не буду." -f $probe.DurationSeconds) -ForegroundColor Yellow
+            if (-not $probe.Success -or -not $probe.ValidAgainstMetadata) {
+                if ($probe.Success) {
+                    Write-Host ("Полученный файл подозрительно отличается по длительности ({0:N1} с); он будет сохранён в карантине перед альтернативной попыткой." -f $probe.DurationSeconds) -ForegroundColor Yellow
+                } else {
+                    Write-Host 'Не удалось проверить длительность нового файла; он будет сохранён в карантине перед альтернативной попыткой.' -ForegroundColor Yellow
+                }
                 $quarantined = Move-CandidateFilesToQuarantine -Queue @($candidate) -RootPath $script:outputDir
-                if ($quarantined.Moved -gt 0) { Write-Host "Подозрительный файл сохранён в карантине: $($quarantined.Path)" -ForegroundColor DarkGray }
+                if ($quarantined.Moved -gt 0) { Write-Host "Файл сохранён в карантине: $($quarantined.Path)" -ForegroundColor DarkGray }
             }
         }
 
