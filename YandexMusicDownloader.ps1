@@ -388,7 +388,11 @@ function Move-ZeroLengthAudioToQuarantine([string]$RootPath) {
     if ([string]::IsNullOrWhiteSpace($RootPath) -or -not (Test-Path -LiteralPath $RootPath -PathType Container)) { return }
     $extensions = @('.m4a', '.mp3', '.flac', '.aac', '.ogg', '.opus', '.wav', '.wma', '.aiff', '.ape')
     $zeroFiles = @(Get-ChildItem -LiteralPath $RootPath -File -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.Length -eq 0 -and $extensions -contains $_.Extension.ToLowerInvariant() })
+        Where-Object {
+            $_.Length -eq 0 -and
+            $extensions -contains $_.Extension.ToLowerInvariant() -and
+            $_.FullName -notmatch '(?i)\\[^\\]*\._DownloaderPlus_Quarantine_[^\\]*\\'
+        })
     if ($zeroFiles.Count -eq 0) { return }
 
     Write-Host ''
@@ -1040,7 +1044,6 @@ Write-Host '  4 — попробовать резервный источник �
 Write-Host '  5 — создать отчёт по недоступным трекам из существующего лога (без скачивания)'
 Write-Host '  6 — проверить расшифровку сохранённого токена (без загрузки и без вывода токена)'
 Write-Host '  7 — проверить шифрование и повторную расшифровку токена (без сети и без изменения сохранённого файла)'
-Write-Host '  0 — выход'
 Write-Host '  8 — повторить незавершённую загрузку по предыдущему логу'
 Write-Host '  0 — выход'
 $actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5','6','7','8') '1'
