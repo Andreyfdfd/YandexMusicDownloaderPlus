@@ -373,6 +373,108 @@ function Get-FormatLabel([string]$QualityValue, [bool]$Mp3) {
     return 'AAC/M4A 64 kbps'
 }
 
+function Get-AudioFileSnapshot([string]$RootPath) {
+    # Snapshot only audio files; covers, lyrics, logs and temporary metadata are excluded.
+    $snapshot = @{}
+    $audioExtensions = @('.m4a', '.mp3', '.flac', '.aac', '.ogg', '.opus', '.wav', '.wma', '.aiff', '.ape')
+
+    if ([string]::IsNullOrWhiteSpace($RootPath) -or -not (Test-Path -LiteralPath $RootPath -PathType Container)) {
+        return ,$snapshot
+    }
+
+    $files = Get-ChildItem -LiteralPath $RootPath -File -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $audioExtensions -contains $_.Extension.ToLowerInvariant() }
+
+    foreach ($file in $files) {
+        $snapshot[$file.FullName] = [pscustomobject]@{
+            Length                = [long]$file.Length
+            LastWriteTimeUtcTicks = [long]$file.LastWriteTimeUtc.Ticks
+        }
+    }
+
+    return ,$snapshot
+}
+
+function Get-ReportedAudioPaths([string]$Text) {
+    if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
+
+    $paths = New-Object 'System.Collections.Generic.List[string]'
+    $seen = @{}
+    $extensionsPattern = '(?:m4a|mp3|flac|aac|ogg|opus|wav|wma|aiff|ape)'
+    # Observed output: [1/1] [AAC 192kbps] Загружается D:\...\Track.m4a
+    $pattern = '(?i)^\s*(?:\[\d+\s*/\s*\d+\]\s*)?(?:\[[^\]]+\]\s*)*(?:Загружается|Скачивается|Downloading|Download(?:ing)?)\s+(?<Path>.+\.' + $extensionsPattern + ')\s*$'
+
+    foreach ($line in [regex]::Split($Text, '\r?\n')) {
+        if ($line -match $pattern) {
+            $path = $Matches['Path'].Trim().Trim('"')
+            try { $path = [System.IO.Path]::GetFullPath($path) } catch { }
+            if (-not $seen.ContainsKey($path)) {
+                $seen[$path] = $true
+                [void]$paths.Add($path)
+            }
+        }
+    }
+
+    return @($paths.ToArray())
+}
+
+function Get-DownloadPassFileStats([hashtable]$Before, [hashtable]$After, [string]$Text) {
+    $newAudioFiles = 0
+    $modifiedAudioFiles = 0
+    $zeroLengthAudioFiles = 0
+
+    foreach ($path in $After.Keys) {
+        $current = $After[$path]
+        $wasPresent = $Before.ContainsKey($path)
+        $wasChanged = $false
+
+        if ($wasPresent) {
+            $previous = $Before[$path]
+            $wasChanged = ($current.Length -ne $previous.Length) -or
+                ($current.LastWriteTimeUtcTicks -ne $previous.LastWriteTimeUtcTicks)
+        }
+
+        if (-not $wasPresent -or $wasChanged) {
+            if ($current.Length -le 0) {
+                $zeroLengthAudioFiles++
+            } elseif (-not $wasPresent) {
+                $newAudioFiles++
+            } else {
+                $modifiedAudioFiles++
+            }
+        }
+    }
+
+    $reportedPaths = @(Get-ReportedAudioPaths -Text $Text)
+    $reportedPathsMissing = 0
+    $reportedPathsUnchanged = 0
+
+    foreach ($reportedPath in $reportedPaths) {
+        if (-not $After.ContainsKey($reportedPath)) {
+            $reportedPathsMissing++
+            continue
+        }
+
+        if ($Before.ContainsKey($reportedPath)) {
+            $previous = $Before[$reportedPath]
+            $current = $After[$reportedPath]
+            if (($current.Length -eq $previous.Length) -and
+                ($current.LastWriteTimeUtcTicks -eq $previous.LastWriteTimeUtcTicks)) {
+                $reportedPathsUnchanged++
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        NewAudioFiles          = $newAudioFiles
+        ModifiedAudioFiles     = $modifiedAudioFiles
+        ZeroLengthAudioFiles   = $zeroLengthAudioFiles
+        ReportedAudioPaths     = $reportedPaths.Count
+        ReportedPathsMissing   = $reportedPathsMissing
+        ReportedPathsUnchanged = $reportedPathsUnchanged
+    }
+}
+
 function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
     $cliArgs = @('--token', $script:token, '--quality', $QualityValue, '--url', $script:sourceUrl, '--dir', $script:outputDir)
 
@@ -400,6 +502,8 @@ function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
     "Качество прохода: $(Get-FormatLabel -QualityValue $QualityValue -Mp3 $script:forceMp3)" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
     "URL прохода: $($script:sourceUrl)" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
 
+    $beforeAudioFiles = Get-AudioFileSnapshot -RootPath $script:outputDir
+
     Write-Host ''
     Write-Host "--- $PassName ---" -ForegroundColor Cyan
     Write-Host "Качество прохода: $(Get-FormatLabel -QualityValue $QualityValue -Mp3 $script:forceMp3)" -ForegroundColor DarkGray
@@ -414,10 +518,25 @@ function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
         Add-Content -LiteralPath $script:logPath -Value $line -Encoding UTF8
     }
     $exitCode = $LASTEXITCODE
+    $afterAudioFiles = Get-AudioFileSnapshot -RootPath $script:outputDir
+    $outputText = ($outputLines -join "`n")
+    $fileStats = Get-DownloadPassFileStats -Before $beforeAudioFiles -After $afterAudioFiles -Text $outputText
+
+    @(
+        "Снимок аудиофайлов до/после прохода:"
+        "Новых аудиофайлов с ненулевым размером: $($fileStats.NewAudioFiles)"
+        "Изменённых аудиофайлов с ненулевым размером: $($fileStats.ModifiedAudioFiles)"
+        "Новых/изменённых аудиофайлов нулевого размера: $($fileStats.ZeroLengthAudioFiles)"
+        "Уникальных путей загрузки, указанных в выводе: $($fileStats.ReportedAudioPaths)"
+        "Указанных путей, отсутствующих после прохода: $($fileStats.ReportedPathsMissing)"
+        "Указанных путей без обнаруженного изменения: $($fileStats.ReportedPathsUnchanged)"
+        "Точное число молча пропущенных файлов upstream не сообщает."
+    ) | Add-Content -LiteralPath $script:logPath -Encoding UTF8
 
     return [pscustomobject]@{
         ExitCode = [int]$exitCode
-        Text = ($outputLines -join "`n")
+        Text = $outputText
+        FileStats = $fileStats
     }
 }
 
@@ -461,7 +580,7 @@ function Get-ErrorLines([string]$Text) {
     return $errorLinesFound
 }
 
-function Show-RunEnding([string]$Text, [int]$ExitCode) {
+function Show-RunEnding([string]$Text, [int]$ExitCode, [object]$FileStats = $null) {
     $errorLines = @(Get-ErrorLines -Text $Text)
     $unavailableEntries = @(Get-UnavailableTrackEntries -Text $Text)
 
@@ -476,6 +595,24 @@ function Show-RunEnding([string]$Text, [int]$ExitCode) {
         Write-Host 'Список недоступных треков будет сохранён в CSV-отчёт.' -ForegroundColor DarkGray
     } else {
         Write-Host 'Загрузчик завершил проход без обнаруженных по тексту ошибок.' -ForegroundColor Green
+    }
+
+    if ($null -ne $FileStats) {
+        Write-Host ''
+        Write-Host 'Итоги по аудиофайлам (сравнение папки до и после прохода):' -ForegroundColor Cyan
+        Write-Host "  Создано новых аудиофайлов: $($FileStats.NewAudioFiles)" -ForegroundColor Green
+        Write-Host "  Изменено существовавших аудиофайлов: $($FileStats.ModifiedAudioFiles)"
+        if ($FileStats.ZeroLengthAudioFiles -gt 0) {
+            Write-Host "  Новых/изменённых аудиофайлов нулевого размера: $($FileStats.ZeroLengthAudioFiles)" -ForegroundColor Yellow
+        }
+        Write-Host "  Уникальных путей загрузки, показанных загрузчиком: $($FileStats.ReportedAudioPaths)"
+        if ($FileStats.ReportedPathsMissing -gt 0) {
+            Write-Host "  Указанных путей не найдено после прохода: $($FileStats.ReportedPathsMissing)" -ForegroundColor Yellow
+        }
+        if ($FileStats.ReportedPathsUnchanged -gt 0) {
+            Write-Host "  Указанных путей без обнаруженного изменения файла: $($FileStats.ReportedPathsUnchanged)" -ForegroundColor Yellow
+        }
+        Write-Host '  Точное число молча пропущенных существующих файлов загрузчик не сообщает.' -ForegroundColor DarkGray
     }
 
     # Return only actionable/general errors. Unavailable tracks are recorded separately
@@ -898,7 +1035,7 @@ try {
     Write-Host 'Для остановки нажми Ctrl+C. Токен передаётся загрузчику как аргумент командной строки и поэтому может быть виден локальным средствам просмотра процессов.' -ForegroundColor DarkGray
 
     $firstPass = Invoke-DownloadPass -PassName 'ПРОХОД 1' -QualityValue $script:quality
-    $hasErrors = Show-RunEnding -Text $firstPass.Text -ExitCode $firstPass.ExitCode
+    $hasErrors = Show-RunEnding -Text $firstPass.Text -ExitCode $firstPass.ExitCode -FileStats $firstPass.FileStats
     $lastPass = $firstPass
 
     if ($hasErrors -and $script:supportsSkipExisting -and $script:sourceUrl -match '/playlists/lk\.' -and $firstPass.Text -match '(?i)playlist-not-found|NotFoundError') {
@@ -913,7 +1050,7 @@ try {
                 $script:sourceUrl = "https://music.yandex.ru/users/$safeLogin/playlists/3"
                 "Альтернативный URL после playlist-not-found: $($script:sourceUrl)" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
                 $lastPass = Invoke-DownloadPass -PassName 'ПОВТОР ПО USER/PLAYLISTS/3' -QualityValue $script:quality
-                $hasErrors = Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode
+                $hasErrors = Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode -FileStats $lastPass.FileStats
                 if ($hasErrors) { $script:sourceUrl = $oldSourceUrl }
             } else {
                 Write-Host 'Логин содержит неподдерживаемые символы. Повтор не выполнялся.' -ForegroundColor Yellow
@@ -931,23 +1068,23 @@ try {
             $retryChoice = Read-MenuChoice 'Повторный проход' @('0','1','2') '1'
             if ($retryChoice -eq '1') {
                 $lastPass = Invoke-DownloadPass -PassName 'ПОВТОР FLAC' -QualityValue '2'
-                $stillErrors = Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode
+                $stillErrors = Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode -FileStats $lastPass.FileStats
                 if ($stillErrors) {
                     $fallbackChoice = Read-MenuChoice 'Остались ошибки. Попробовать AAC/M4A 192 кбит/с для ещё не скачанных треков? (1 — да, 0 — нет)' @('0','1') '1'
                     if ($fallbackChoice -eq '1') {
                         $lastPass = Invoke-DownloadPass -PassName 'РЕЗЕРВНЫЙ ПРОХОД AAC/M4A 192' -QualityValue '1'
-                        [void](Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode)
+                        [void](Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode -FileStats $lastPass.FileStats)
                     }
                 }
             } elseif ($retryChoice -eq '2') {
                 $lastPass = Invoke-DownloadPass -PassName 'РЕЗЕРВНЫЙ ПРОХОД AAC/M4A 192' -QualityValue '1'
-                [void](Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode)
+                [void](Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode -FileStats $lastPass.FileStats)
             }
         } else {
             $retryChoice = Read-MenuChoice 'Повторить один раз в том же качестве? (0 — нет, 1 — да)' @('0','1') '1'
             if ($retryChoice -eq '1') {
                 $lastPass = Invoke-DownloadPass -PassName 'ПОВТОРНЫЙ ПРОХОД' -QualityValue $script:quality
-                [void](Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode)
+                [void](Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode -FileStats $lastPass.FileStats)
             }
         }
     }

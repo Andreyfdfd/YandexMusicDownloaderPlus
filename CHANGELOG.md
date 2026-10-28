@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3 — 2026-10-28
+
+- Added before/after snapshots of audio files for each download pass, reporting created, modified, and zero-length files.
+- Parsed distinct audio paths reported by the downloader and flagged paths that are missing or unchanged after the pass.
+- Appended filesystem result summaries to the log while explicitly avoiding guesses about silently skipped existing files.
+
 ## 0.1.2 — 2026-10-28
 
 - Replaced `ConvertTo-SecureString` / `ConvertFrom-SecureString` calls for token storage with a small wrapper around the native Windows DPAPI API.

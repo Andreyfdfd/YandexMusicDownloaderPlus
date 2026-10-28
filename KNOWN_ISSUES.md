@@ -20,19 +20,20 @@
 - Windows one-track run passed: the saved token was reused and `Just Blue.m4a` was created with a nonzero size (6,980,159 bytes). The local test confirms the file exists; playback/duration should be checked by the user if validating audio integrity.
 - Windows round-trip test passed: menu option 7 decrypted the saved token, encrypted it to a temporary DPAPI file, reloaded and decrypted it, and confirmed the values match. The original saved-token file was not modified; the temporary file was removed.
 
+## Implemented in `feature/download-result-summary`
+
+- Take a snapshot of audio files in the destination before and after each pass and report new, modified, and newly/modified zero-length audio files.
+- Parse distinct audio output paths reported by the downloader and report any reported paths that are absent after the pass or have no observed file change.
+- Append the same per-pass file summary to the download log.
+- Do not claim that a nonzero file is complete or playable based on size alone.
+
 ## Remaining work
 
-### 1. Summary statistics
+### 1. Reliable upstream counters and audio validation
 
-At the end of a pass, report at least:
-
-- total entries processed (if the backend output exposes it)
-- skipped/existing files, when identifiable
-- newly downloaded tracks, when identifiable
-- unavailable/failed tracks
-- other errors
-
-Do not guess counts that the backend does not expose. In particular, `[index/total]` is a position in the source list, not a downloaded-file count.
+- Exact counts of all playlist entries processed and existing files silently skipped remain unavailable unless the upstream downloader exposes them.
+- File snapshots measure changes in the destination folder during the pass. They do not verify audio duration, decodability, tags, or whether another process changed a file concurrently.
+- Consider adding media-duration validation and a stronger success/failure signal if the upstream downloader exposes enough metadata.
 
 ### 2. Resume and duplicate safety
 
