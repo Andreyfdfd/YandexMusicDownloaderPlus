@@ -463,7 +463,7 @@ function Get-SourceSnapshotKey([string]$SourceUrl) {
     }
 }
 
-function Invoke-SourceInventory([string]$SourceUrl, [string]$PythonExe) {
+function Invoke-SourceInventory([string]$SourceUrl, [string]$PythonExe, [string]$DelaySeconds = '0') {
     $helperPath = Join-Path (Join-Path $scriptRoot 'tools') 'source_inventory.py'
     if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {
         return [pscustomobject]@{ Success = $false; Tracks = @(); Error = "Не найден вспомогательный файл: $helperPath" }
@@ -474,7 +474,7 @@ function Invoke-SourceInventory([string]$SourceUrl, [string]$PythonExe) {
     $jsonPath = Join-Path $env:TEMP ("ymdp-source-inventory-{0}.json" -f [guid]::NewGuid().ToString('N'))
     $env:YMDPLUS_INVENTORY_TOKEN = $script:token
     try {
-        $null = & $PythonExe $helperPath inventory --url $SourceUrl --output-json $jsonPath 2>&1
+        $null = & $PythonExe $helperPath inventory --url $SourceUrl --output-json $jsonPath --delay $DelaySeconds 2>&1
         $exitCode = $LASTEXITCODE
         if (-not (Test-Path -LiteralPath $jsonPath -PathType Leaf)) {
             return [pscustomobject]@{ Success = $false; Tracks = @(); Error = "Помощник состава источника завершился с кодом $exitCode и не создал ответ." }
@@ -755,7 +755,7 @@ function Add-RetryCandidate([System.Collections.Generic.List[object]]$Queue, [ha
     $Seen[$key] = $candidate
 }
 
-function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [string]$PythonExe, [string]$LogsDir) {
+function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [string]$PythonExe, [string]$LogsDir, [string]$DelaySeconds = '0') {
     $match = [regex]::Match([System.IO.Path]::GetFileName($PreviousLogPath), '^download-(?<Stamp>\d{8}-\d{6})\.log$')
     if (-not $match.Success) { return [pscustomobject]@{ Queue = @(); Error = 'Имя выбранного лога не содержит ожидаемую временную метку.' } }
     $oldStamp = $match.Groups['Stamp'].Value
@@ -802,7 +802,7 @@ function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [st
         $hasOriginalInventory = $inventory.Count -gt 0
     } else {
         Write-Host 'У выбранного запуска нет сохранённого снимка треков. Пытаюсь прочитать состав источника сейчас; привязка старых позиций может оказаться невозможной.' -ForegroundColor Yellow
-        $snapshot = Invoke-SourceInventory -SourceUrl $script:resumeSettings.Url -PythonExe $PythonExe
+        $snapshot = Invoke-SourceInventory -SourceUrl $script:resumeSettings.Url -PythonExe $PythonExe -DelaySeconds $DelaySeconds
         if ($snapshot.Success) { $inventory = @($snapshot.Tracks) }
         else { Write-Host "Не удалось получить состав источника: $($snapshot.Error)" -ForegroundColor Yellow }
     }
@@ -938,7 +938,7 @@ function Invoke-YtDlpRecoveryTrack([object]$Candidate, [string]$PythonExe, [stri
 }
 
 function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, [string]$LogsDir, [string]$RunTimestamp) {
-    $queueResult = Get-RetryQueueFromLog -PreviousLogPath $PreviousLogPath -OutputDir $script:outputDir -PythonExe $PythonExe -LogsDir $LogsDir
+    $queueResult = Get-RetryQueueFromLog -PreviousLogPath $PreviousLogPath -OutputDir $script:outputDir -PythonExe $PythonExe -LogsDir $LogsDir -DelaySeconds $script:delay
     if ($queueResult.Queue.Count -eq 0) {
         if ($queueResult.ReusedRecoveryQueue) {
             Write-Host 'В предыдущей очереди не осталось треков для повторного восстановления.' -ForegroundColor Green
@@ -1977,7 +1977,7 @@ try {
             $inventoryPython = Find-PythonForDownloader -ExecutablePath $script:exePath -FallbackExecutablePath $defaultExe
             Write-Host ''
             Write-Host 'Сверяю список треков источника для отчёта об удалённых и неудачных композициях...' -ForegroundColor Cyan
-            $inventoryResult = Invoke-SourceInventory -SourceUrl $script:sourceUrl -PythonExe $inventoryPython
+            $inventoryResult = Invoke-SourceInventory -SourceUrl $script:sourceUrl -PythonExe $inventoryPython -DelaySeconds $script:delay
             if ($inventoryResult.Success -and $inventoryResult.Count -gt 0) {
                 $script:sourceInventorySucceeded = $true
                 $script:sourceInventoryRecords = @($inventoryResult.Tracks)
