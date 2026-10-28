@@ -15,7 +15,10 @@
 - Preserve the previous `ConvertFrom-SecureString` DPAPI hex format so the existing `%APPDATA%\\YandexMusicDownloaderPlus\\token.dpapi` can be reused without entering the token again.
 - Keep the token encrypted at rest; do not use plaintext token files as a workaround.
 - Added menu option 6 to test saved-token decryption without displaying the secret or making a network request.
-- User verified menu option 6 on Windows and confirmed the existing `token.dpapi` decrypts successfully with the native DPAPI helper. Still needs a normal one-track launch to confirm the saved token is reused through the full downloader startup, and a save/reload round-trip test.
+- Added menu option 7 to verify encrypt/write/read/decrypt round-trip through a temporary DPAPI file; the original saved-token file is not modified, and the temporary file is removed.
+- Windows test passed: menu option 6 decrypted the existing `token.dpapi`.
+- Windows one-track run passed: the saved token was reused and `Just Blue.m4a` was created with a nonzero size (6,980,159 bytes). The local test confirms the file exists; playback/duration should be checked by the user if validating audio integrity.
+- Still needs menu option 7 round-trip test on Windows.
 
 ## Remaining work
 
