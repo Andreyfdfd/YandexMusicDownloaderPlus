@@ -28,6 +28,13 @@
 - Export `file-outcomes-*.csv` with one row per reported audio path and every new/changed audio file found in the destination. Rows include observed status, whether the downloader mentioned the path, existence and size before/after, and last-write time.
 - Do not claim that a nonzero file is complete or playable based on size alone.
 
+## Implemented in `feature/retry-incomplete-download`
+
+- Add menu option 8 to select one of the ten most recent `download-*.log` files and retry using the URL and destination folder recorded in that log.
+- Prefer the last URL actually passed to the downloader and use the most recent logged quality as the default; allow the user to choose a different quality.
+- Keep `--skip-existing` enabled on every retry. Ask before moving zero-length audio files to a sibling quarantine directory so the downloader has a chance to recreate them; never delete them automatically.
+- Record the source log path in the new run log. Re-enter the saved DPAPI token through the normal token flow; the token is not copied from the old log.
+
 ## Remaining work
 
 ### 1. Reliable upstream counters and audio validation
