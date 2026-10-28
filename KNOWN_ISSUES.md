@@ -35,6 +35,13 @@
 - Keep `--skip-existing` enabled on every retry. Ask before moving zero-length audio files to a sibling quarantine directory so the downloader has a chance to recreate them; never delete them automatically.
 - Record the source log path in the new run log. Re-enter the saved DPAPI token through the normal token flow; the token is not copied from the old log.
 
+## Implemented in `feature/failed-track-recovery`
+
+- Add a Python helper to enumerate tracks for supported source URLs through the installed `yandex_music` / `ymd` packages and save a per-run source inventory without storing the token in files or logs.
+- Compare the current inventory with the last snapshot for the exact same source URL and emit `library-status-*.csv` rows for removed-from-source tracks, unavailable tracks, and tracks whose reported path is missing or zero-length after a pass. Never delete local music files.
+- Add menu option 9 to build a retry queue from the selected run log, retry each track by direct URL through the main downloader, and offer the `yt-dlp` browser-session fallback for remaining failures.
+- Probe downloaded audio duration with Mutagen and compare it with source metadata. Put unverified/short alternate results in staging; quarantine a newly created primary result if its duration is invalid instead of silently replacing the target.
+
 ## Remaining work
 
 ### 1. Reliable upstream counters and audio validation
