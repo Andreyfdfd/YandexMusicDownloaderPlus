@@ -6,6 +6,7 @@
 - Kept the existing DPAPI hex payload format for backward compatibility with the saved token file.
 - Avoided storing the token as plaintext to work around a PowerShell Security module loading failure.
 - Added menu option 6 to verify saved-token decryption offline without displaying the secret or starting a download.
+- Added menu option 7 to test token decrypt/encrypt/file/reload round-trip in a temporary file without changing the saved token or contacting the network.
 
 ## 0.1.1 — 2026-10-28
 
