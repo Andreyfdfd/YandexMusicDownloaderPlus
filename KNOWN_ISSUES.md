@@ -1,14 +1,16 @@
 # Known issues / TODO
 
-## 1. Classify unavailable tracks correctly
+## Implemented in `fix/unavailable-track-reporting`
 
-Observed in a real run on 2026-10-28: lines like
+- Recognize upstream messages such as `[1866/6737] Трек ... не доступен для скачивания`.
+- Keep unavailable-track messages separate from general/fatal errors, so they do not automatically trigger a retry of the entire playlist on their own.
+- Create `unavailable-*.csv` with playlist index, total, displayed track label, number of observed attempts, pass names, and raw message(s).
+- Make the end-of-pass summary warn when unavailable tracks were reported instead of claiming there were no detected problems.
+- Include unavailable-track count and CSV path in `errors-*.txt`.
 
-`[1866/6737] Трек Didier Marouani, Space - Just Blue не доступен для скачивания`
+## Remaining work
 
-are printed during processing, while the final summary said there were no detected errors. The PowerShell error classifier needs to recognize `не доступен для скачивания` (with spaces), count these separately from fatal errors, and create a machine-readable CSV report with track index, total count, displayed artist/title, and raw message. It must not claim the pass succeeded when such lines exist.
-
-## 2. Summary statistics
+### 1. Summary statistics
 
 At the end of a pass, report at least:
 
@@ -18,21 +20,22 @@ At the end of a pass, report at least:
 - unavailable/failed tracks
 - other errors
 
-Do not guess counts that the backend does not expose.
+Do not guess counts that the backend does not expose. In particular, `[index/total]` is a position in the source list, not a downloaded-file count.
 
-## 3. Resume and duplicate safety
+### 2. Resume and duplicate safety
 
 Preserve `--skip-existing` and the existing directory/path pattern. Do not auto-delete local files. Any alternate-backend output should stay in a staging folder until the user verifies duration and tags.
 
-## 4. Progress and logging
+### 3. Progress and logging
 
-Keep live progress in the original terminal and ensure the same track-level output is appended to the run log. Test Unicode names. Ensure the final report parses the log/output from the current run, including non-English messages.
+Keep live progress in the original terminal and ensure the same track-level output is appended to the run log. Continue to test Unicode names and ensure the final report parses the log/output from the current run, including non-English messages.
 
-## 5. Test matrix
+### 4. Test matrix
 
 - Existing file is skipped
 - Missing normal track downloads
 - Unavailable track is recorded as unavailable rather than general success
+- Repeated unavailable message from a retry becomes one CSV row with an attempts count
 - Expired/invalid token produces a clear auth error
 - Ctrl+C leaves files already completed intact
 - Saved DPAPI token is reused by the same Windows user
