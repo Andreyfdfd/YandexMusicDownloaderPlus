@@ -551,10 +551,13 @@ function Test-AudioDuration([string]$PythonExe, [string]$AudioPath, [object]$Exp
 
 function Add-TrackFailureToMap([hashtable]$FailureMap, [object]$TrackRecord, [string]$Details, [string]$FallbackLabel = '') {
     $trackId = ''
+    $trackKey = ''
     if ($null -ne $TrackRecord -and -not [string]::IsNullOrWhiteSpace([string]$TrackRecord.TrackId)) {
         $trackId = [string]$TrackRecord.TrackId
+        $trackKey = [string]$TrackRecord.TrackKey
+        if ([string]::IsNullOrWhiteSpace($trackKey)) { $trackKey = $trackId }
     }
-    $key = if ($trackId) { $trackId } else { "label:$FallbackLabel" }
+    $key = if ($trackKey) { $trackKey } elseif ($trackId) { $trackId } else { "label:$FallbackLabel" }
     if ([string]::IsNullOrWhiteSpace($key)) { $key = "unknown:$($FailureMap.Count)" }
 
     if ($FailureMap.ContainsKey($key)) {
@@ -585,6 +588,7 @@ function Add-TrackFailureToMap([hashtable]$FailureMap, [object]$TrackRecord, [st
         Category = 'Не удалось скачать'
         SourceIndex = $sourceIndex
         TrackId = $trackId
+        TrackKey = $trackKey
         TrackTitle = $title
         Artists = $artists
         AlbumTitle = $album
@@ -611,17 +615,22 @@ function Write-SourceStatusReport(
     $failures = @{}
     $currentIds = @{}
     foreach ($track in @($CurrentInventory)) {
-        if (-not [string]::IsNullOrWhiteSpace([string]$track.TrackId)) { $currentIds[[string]$track.TrackId] = $true }
+        $currentKey = [string]$track.TrackKey
+        if ([string]::IsNullOrWhiteSpace($currentKey)) { $currentKey = [string]$track.TrackId }
+        if (-not [string]::IsNullOrWhiteSpace($currentKey)) { $currentIds[$currentKey] = $true }
     }
 
     if ($HasPreviousInventory) {
         foreach ($oldTrack in @($PreviousInventory)) {
             $oldId = [string]$oldTrack.TrackId
-            if (-not [string]::IsNullOrWhiteSpace($oldId) -and -not $currentIds.ContainsKey($oldId)) {
+            $oldKey = [string]$oldTrack.TrackKey
+            if ([string]::IsNullOrWhiteSpace($oldKey)) { $oldKey = $oldId }
+            if (-not [string]::IsNullOrWhiteSpace($oldKey) -and -not $currentIds.ContainsKey($oldKey)) {
                 [void]$rows.Add([pscustomobject]@{
                     Category = 'Удалено из источника'
                     SourceIndex = $oldTrack.SourceIndex
                     TrackId = $oldId
+                    TrackKey = $oldKey
                     TrackTitle = $oldTrack.TrackTitle
                     Artists = $oldTrack.Artists
                     AlbumTitle = $oldTrack.AlbumTitle
@@ -635,7 +644,7 @@ function Write-SourceStatusReport(
     } else {
         [void]$rows.Add([pscustomobject]@{
             Category = 'Начальный снимок источника'
-            SourceIndex = ''; TrackId = ''; TrackTitle = ''; Artists = ''; AlbumTitle = ''
+            SourceIndex = ''; TrackId = ''; TrackKey = ''; TrackTitle = ''; Artists = ''; AlbumTitle = ''
             TrackUrl = ''; RelativeBasePath = ''; DurationMs = ''
             Details = 'Предыдущего снимка нет. Этот запуск создаёт базу для сравнения удалённых из источника треков в следующих запусках.'
         })
@@ -671,7 +680,7 @@ function Write-SourceStatusReport(
     foreach ($errorLine in @(Get-ErrorLines -Text $LogText)) {
         [void]$rows.Add([pscustomobject]@{
             Category = 'Общая ошибка загрузки'
-            SourceIndex = ''; TrackId = ''; TrackTitle = ''; Artists = ''; AlbumTitle = ''
+            SourceIndex = ''; TrackId = ''; TrackKey = ''; TrackTitle = ''; Artists = ''; AlbumTitle = ''
             TrackUrl = ''; RelativeBasePath = ''; DurationMs = ''
             Details = [string]$errorLine
         })
@@ -679,7 +688,7 @@ function Write-SourceStatusReport(
     if ($rows.Count -eq 0) {
         [void]$rows.Add([pscustomobject]@{
             Category = 'Проблем не обнаружено'
-            SourceIndex = ''; TrackId = ''; TrackTitle = ''; Artists = ''; AlbumTitle = ''
+            SourceIndex = ''; TrackId = ''; TrackKey = ''; TrackTitle = ''; Artists = ''; AlbumTitle = ''
             TrackUrl = ''; RelativeBasePath = ''; DurationMs = ''
             Details = 'В ходе этого запуска не обнаружено удалённых из источника или однозначно неудачных треков.'
         })
@@ -707,8 +716,13 @@ function Write-SourceStatusReport(
 
 function Add-RetryCandidate([System.Collections.Generic.List[object]]$Queue, [hashtable]$Seen, [object]$TrackRecord, [string]$Details, [string]$FallbackLabel = '') {
     $trackId = ''
-    if ($null -ne $TrackRecord) { $trackId = [string]$TrackRecord.TrackId }
-    $key = if ($trackId) { $trackId } else { "label:$FallbackLabel" }
+    $trackKey = ''
+    if ($null -ne $TrackRecord) {
+        $trackId = [string]$TrackRecord.TrackId
+        $trackKey = [string]$TrackRecord.TrackKey
+        if ([string]::IsNullOrWhiteSpace($trackKey)) { $trackKey = $trackId }
+    }
+    $key = if ($trackKey) { $trackKey } elseif ($trackId) { $trackId } else { "label:$FallbackLabel" }
     if ([string]::IsNullOrWhiteSpace($key)) { return }
     if ($Seen.ContainsKey($key)) {
         $existing = $Seen[$key]
@@ -721,6 +735,7 @@ function Add-RetryCandidate([System.Collections.Generic.List[object]]$Queue, [ha
     $candidate = [pscustomobject]@{
         SourceIndex = $TrackRecord.SourceIndex
         TrackId = $trackId
+        TrackKey = $trackKey
         TrackTitle = $TrackRecord.TrackTitle
         TrackLabel = $TrackRecord.TrackLabel
         Artists = $TrackRecord.Artists
@@ -843,7 +858,10 @@ function Initialize-YtDlpRecovery([string]$PythonExe) {
 }
 
 function Invoke-YtDlpRecoveryTrack([object]$Candidate, [string]$PythonExe, [string]$Browser, [string]$StagingRoot) {
-    $trackStage = Join-Path $StagingRoot ([string]$Candidate.TrackId)
+    $stageKey = [string]$Candidate.TrackKey
+    if ([string]::IsNullOrWhiteSpace($stageKey)) { $stageKey = [string]$Candidate.TrackId }
+    $stageKey = $stageKey -replace '[^A-Za-z0-9_-]', '_'
+    $trackStage = Join-Path $StagingRoot $stageKey
     New-Item -ItemType Directory -Path $trackStage -Force | Out-Null
     $outputPattern = Join-Path $trackStage 'track.%(ext)s'
     $args = @('-m','yt_dlp','--cookies-from-browser',$Browser,'--no-playlist','--no-overwrites','--embed-metadata','--embed-thumbnail','--output',$outputPattern,[string]$Candidate.TrackUrl)
@@ -902,7 +920,7 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
         }
     }
     if ($zeroCandidates.Count -gt 0) {
-        $zeroDistinct = @($zeroCandidates | Group-Object TrackId | ForEach-Object { $_.Group[0] })
+        $zeroDistinct = @($zeroCandidates | Group-Object TrackKey | ForEach-Object { $_.Group[0] })
         Write-Host ("Для {0} проблемных треков найдены файлы нулевого размера; загрузчик может пропустить их из-за --skip-existing." -f $zeroDistinct.Count) -ForegroundColor Yellow
         $moveZero = Read-MenuChoice '0 — оставить; 1 — переместить эти файлы в карантин и повторить загрузку' @('0','1') '0'
         if ($moveZero -eq '1') {
@@ -918,7 +936,7 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
         }
     }
     if ($existingCandidates.Count -gt 0) {
-        $existingDistinct = @($existingCandidates | Group-Object TrackId | ForEach-Object { $_.Group[0] })
+        $existingDistinct = @($existingCandidates | Group-Object TrackKey | ForEach-Object { $_.Group[0] })
         Write-Host ("У {0} кандидатов всё ещё есть локальный аудиофайл. Он может быть полноценным, а может быть частичным." -f $existingDistinct.Count) -ForegroundColor Yellow
         $moveExisting = Read-MenuChoice '0 — сохранить и пропустить; 1 — перенести эти файлы в карантин и попытаться скачать заново' @('0','1') '0'
         if ($moveExisting -eq '1') {
