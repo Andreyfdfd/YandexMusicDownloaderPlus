@@ -758,9 +758,11 @@ function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [st
     $queue = New-Object 'System.Collections.Generic.List[object]'
     $seen = @{}
     $inventory = @()
+    $hasOriginalInventory = $false
 
     if (Test-Path -LiteralPath $inventoryPath -PathType Leaf) {
         $inventory = @(Import-Csv -LiteralPath $inventoryPath)
+        $hasOriginalInventory = $inventory.Count -gt 0
     } else {
         Write-Host 'У выбранного запуска нет сохранённого снимка треков. Пытаюсь прочитать состав источника сейчас; привязка старых позиций может оказаться невозможной.' -ForegroundColor Yellow
         $snapshot = Invoke-SourceInventory -SourceUrl $script:resumeSettings.Url -PythonExe $PythonExe
@@ -779,7 +781,7 @@ function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [st
     $oldLogText = Get-Content -LiteralPath $PreviousLogPath -Raw -ErrorAction SilentlyContinue
     foreach ($entry in @(Get-UnavailableTrackEntries -Text $oldLogText)) {
         $track = $null
-        if ($inventory.Count -eq [int]$entry.PlaylistTotal) {
+        if ($hasOriginalInventory -and $inventory.Count -eq [int]$entry.PlaylistTotal) {
             $track = @($inventory | Where-Object { [int]$_.SourceIndex -eq [int]$entry.TrackIndex } | Select-Object -First 1)[0]
         }
         if ($null -eq $track) {
