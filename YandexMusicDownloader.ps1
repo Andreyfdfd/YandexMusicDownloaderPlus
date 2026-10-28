@@ -945,9 +945,12 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
     if ($queueResult.Queue.Count -eq 0) {
         if ($queueResult.ReusedRecoveryQueue) {
             Write-Host 'В предыдущей очереди не осталось треков для повторного восстановления.' -ForegroundColor Green
+        } elseif ([string]$script:resumeSettings.Url -match '/track/\d+') {
+            Write-Host 'Выбран лог одиночного трека, который в этом запуске скачался успешно. В нём нет списка неудачных композиций, поэтому очередь пуста.' -ForegroundColor Yellow
+            Write-Host 'Чтобы проверить нужную функцию, сначала запусти пункт 1 с полной ссылкой на плейлист/альбом. После отчёта выбери здесь лог именно этого запуска.' -ForegroundColor Gray
         } else {
-            Write-Host 'В выбранном запуске не удалось составить очередь отдельных треков для повтора.' -ForegroundColor Yellow
-            Write-Host 'Для старого лога без source-inventory CSV может потребоваться обычный запуск, чтобы создать точный снимок источника.' -ForegroundColor Gray
+            Write-Host 'В выбранном логе не обнаружены треки, которые можно надёжно сопоставить с неудачной загрузкой.' -ForegroundColor Yellow
+            Write-Host 'Если это старый запуск, созданный до снимков источника, сначала запусти пункт 1 с полной ссылкой на плейлист/альбом, чтобы создать точный снимок.' -ForegroundColor Gray
         }
         return
     }
