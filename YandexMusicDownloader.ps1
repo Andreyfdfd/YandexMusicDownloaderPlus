@@ -948,6 +948,13 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
         $beforeFiles = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath) | ForEach-Object { $_.FullName.ToLowerInvariant() })
         $pass = Invoke-DownloadPass -PassName ("ВОССТАНОВЛЕНИЕ {0:D3} — ОСНОВНОЙ" -f ($i + 1)) -QualityValue $script:quality
         $afterFiles = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
+        $newZeroFiles = @($afterFiles | Where-Object { $beforeFiles -notcontains $_.FullName.ToLowerInvariant() -and $_.Length -eq 0 })
+        if ($newZeroFiles.Count -gt 0) {
+            Write-Host 'Основной загрузчик оставил файл нулевого размера; он будет сохранён в карантине перед альтернативной попыткой.' -ForegroundColor Yellow
+            $zeroQuarantine = Move-CandidateFilesToQuarantine -Queue @($candidate) -RootPath $script:outputDir
+            if ($zeroQuarantine.Moved -gt 0) { Write-Host "Нулевой файл сохранён в карантине: $($zeroQuarantine.Path)" -ForegroundColor DarkGray }
+            $afterFiles = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
+        }
         $newFiles = @($afterFiles | Where-Object { $beforeFiles -notcontains $_.FullName.ToLowerInvariant() -and $_.Length -gt 0 })
         $verified = $null
         foreach ($file in $newFiles) {
@@ -973,7 +980,8 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
             } else {
                 'Аудиофайл читается, но длительность в метаданных источника неизвестна; проверь вручную.'
             }
-            [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; Track = $candidate.TrackTitle; Status = 'Успешно восстановлен'; Method = 'Основной загрузчик'; Path = $verified.File.FullName; Details = $detail })
+            $recoveryStatus = if ($verified.Probe.ValidAgainstMetadata) { 'Успешно восстановлен' } else { 'Скачан, нужна ручная проверка' }
+            [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; Track = $candidate.TrackTitle; Status = $recoveryStatus; Method = 'Основной загрузчик'; Path = $verified.File.FullName; Details = $detail })
             Write-Host $detail -ForegroundColor Green
             continue
         }
