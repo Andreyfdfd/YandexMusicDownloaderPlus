@@ -14,6 +14,7 @@
 - Use the native Windows DPAPI API directly for saved-token load/save, bypassing `Microsoft.PowerShell.Security` module autoload.
 - Preserve the previous `ConvertFrom-SecureString` DPAPI hex format so the existing `%APPDATA%\\YandexMusicDownloaderPlus\\token.dpapi` can be reused without entering the token again.
 - Keep the token encrypted at rest; do not use plaintext token files as a workaround.
+- Added menu option 6 to test saved-token decryption without displaying the secret or making a network request.
 - Still needs end-to-end verification on the user's Windows installation, including reading the existing token and saving/reusing it again.
 
 ## Remaining work
