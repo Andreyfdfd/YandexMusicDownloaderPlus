@@ -9,6 +9,17 @@
 - Include unavailable-track count and CSV path in `errors-*.txt`.
 - Add menu option 5 to analyse an existing download log without launching a downloader pass.
 
+## Implemented in `fix/dpapi-token-module-fallback`
+
+- Use the native Windows DPAPI API directly for saved-token load/save, bypassing `Microsoft.PowerShell.Security` module autoload.
+- Preserve the previous `ConvertFrom-SecureString` DPAPI hex format so the existing `%APPDATA%\\YandexMusicDownloaderPlus\\token.dpapi` can be reused without entering the token again.
+- Keep the token encrypted at rest; do not use plaintext token files as a workaround.
+- Added menu option 6 to test saved-token decryption without displaying the secret or making a network request.
+- Added menu option 7 to verify encrypt/write/read/decrypt round-trip through a temporary DPAPI file; the original saved-token file is not modified, and the temporary file is removed.
+- Windows test passed: menu option 6 decrypted the existing `token.dpapi`.
+- Windows one-track run passed: the saved token was reused and `Just Blue.m4a` was created with a nonzero size (6,980,159 bytes). The local test confirms the file exists; playback/duration should be checked by the user if validating audio integrity.
+- Still needs menu option 7 round-trip test on Windows.
+
 ## Remaining work
 
 ### 1. Summary statistics
