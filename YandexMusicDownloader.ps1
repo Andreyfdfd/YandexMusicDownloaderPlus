@@ -189,6 +189,33 @@ namespace YandexMusicDownloaderPlus
                     Array.Clear(clear, 0, clear.Length);
             }
         }
+
+        public static bool AreEqual(SecureString left, SecureString right)
+        {
+            if (left == null || right == null || left.Length != right.Length)
+                return false;
+
+            IntPtr leftPtr = IntPtr.Zero;
+            IntPtr rightPtr = IntPtr.Zero;
+            try
+            {
+                leftPtr = Marshal.SecureStringToCoTaskMemUnicode(left);
+                rightPtr = Marshal.SecureStringToCoTaskMemUnicode(right);
+                for (int i = 0; i < left.Length; i++)
+                {
+                    if (Marshal.ReadInt16(leftPtr, i * 2) != Marshal.ReadInt16(rightPtr, i * 2))
+                        return false;
+                }
+                return true;
+            }
+            finally
+            {
+                if (leftPtr != IntPtr.Zero)
+                    Marshal.ZeroFreeCoTaskMemUnicode(leftPtr);
+                if (rightPtr != IntPtr.Zero)
+                    Marshal.ZeroFreeCoTaskMemUnicode(rightPtr);
+            }
+        }
     }
 }
 '@ -ErrorAction Stop
@@ -234,6 +261,45 @@ function Test-SavedTokenStorage {
         Write-Host 'Файл не был удалён или перезаписан.' -ForegroundColor DarkGray
     } finally {
         if ($null -ne $testToken) { $testToken.Dispose() }
+    }
+}
+
+function Test-SavedTokenRoundTrip {
+    $tokenStoreDir = Join-Path $env:APPDATA 'YandexMusicDownloaderPlus'
+    $tokenPath = Join-Path $tokenStoreDir 'token.dpapi'
+    if (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) {
+        Write-Host "Сохранённый файл токена не найден: $tokenPath" -ForegroundColor Yellow
+        return
+    }
+
+    $tempPath = Join-Path $env:TEMP ("YandexMusicDownloaderPlus-roundtrip-" + [guid]::NewGuid().ToString('N') + '.dpapi')
+    $originalToken = $null
+    $roundTripToken = $null
+    try {
+        $storedCiphertext = [System.IO.File]::ReadAllText($tokenPath, [System.Text.Encoding]::ASCII).Trim()
+        $originalToken = [YandexMusicDownloaderPlus.DpapiTokenStore]::UnprotectToSecureString($storedCiphertext)
+
+        $tempCiphertext = [YandexMusicDownloaderPlus.DpapiTokenStore]::ProtectSecureString($originalToken)
+        [System.IO.File]::WriteAllText($tempPath, $tempCiphertext, [System.Text.Encoding]::ASCII)
+
+        $reloadedCiphertext = [System.IO.File]::ReadAllText($tempPath, [System.Text.Encoding]::ASCII).Trim()
+        $roundTripToken = [YandexMusicDownloaderPlus.DpapiTokenStore]::UnprotectToSecureString($reloadedCiphertext)
+
+        if ([YandexMusicDownloaderPlus.DpapiTokenStore]::AreEqual($originalToken, $roundTripToken)) {
+            Write-Host 'УСПЕХ: токен расшифрован, повторно зашифрован во временный файл и снова расшифрован; значения совпадают.' -ForegroundColor Green
+            Write-Host 'Исходный token.dpapi не изменён. Токен не выводился и не отправлялся в сеть.' -ForegroundColor DarkGray
+        } else {
+            throw 'Токен после повторного шифрования и расшифровки не совпал с исходным.'
+        }
+    } catch {
+        Write-Host "Проверка шифрования и повторной расшифровки не пройдена: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host 'Исходный файл token.dpapi не изменялся.' -ForegroundColor DarkGray
+    } finally {
+        if ($null -ne $originalToken) { $originalToken.Dispose() }
+        if ($null -ne $roundTripToken) { $roundTripToken.Dispose() }
+        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -610,8 +676,9 @@ Write-Host '  3 — обновить загрузчик и затем начат
 Write-Host '  4 — попробовать резервный источник для одного проблемного трека (yt-dlp + сессия браузера)'
 Write-Host '  5 — создать отчёт по недоступным трекам из существующего лога (без скачивания)'
 Write-Host '  6 — проверить расшифровку сохранённого токена (без загрузки и без вывода токена)'
+Write-Host '  7 — проверить шифрование и повторную расшифровку токена (без сети и без изменения сохранённого файла)'
 Write-Host '  0 — выход'
-$actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5','6') '1'
+$actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5','6','7') '1'
 if ($actionChoice -eq '0') { exit 0 }
 if ($actionChoice -eq '4') {
     Invoke-AlternativeTrack
@@ -625,6 +692,11 @@ if ($actionChoice -eq '5') {
 }
 if ($actionChoice -eq '6') {
     Test-SavedTokenStorage
+    Read-Host 'Нажми Enter для выхода' | Out-Null
+    exit 0
+}
+if ($actionChoice -eq '7') {
+    Test-SavedTokenRoundTrip
     Read-Host 'Нажми Enter для выхода' | Out-Null
     exit 0
 }
