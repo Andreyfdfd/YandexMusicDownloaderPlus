@@ -7,6 +7,7 @@
 - Updated end-of-pass output to warn when tracks are unavailable instead of reporting an unqualified success.
 - Kept unavailable-track reports separate from general errors so unavailable-only runs do not automatically retry the entire playlist.
 - Expanded `errors-*.txt` with summary counts and the CSV report path.
+- Added menu option 5 to rebuild diagnostics from an existing log without downloading music or requesting a token.
 
 ## 0.1.0 — 2026-10-28
 
