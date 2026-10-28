@@ -878,6 +878,9 @@ function Invoke-YtDlpRecoveryTrack([object]$Candidate, [string]$PythonExe, [stri
         return [pscustomobject]@{ Success = $false; Path = ''; Details = "Резервный источник завершился с кодом $exitCode и не создал аудиофайл. Staging: $trackStage" }
     }
     $candidateFile = $files | Sort-Object Length -Descending | Select-Object -First 1
+    if (@('.m4a','.mp3','.flac') -notcontains $candidateFile.Extension.ToLowerInvariant()) {
+        return [pscustomobject]@{ Success = $false; Path = $candidateFile.FullName; Details = "Формат $($candidateFile.Extension) основной загрузчик не распознаёт для --skip-existing; файл оставлен в staging для ручной проверки." }
+    }
     $duration = Test-AudioDuration -PythonExe $PythonExe -AudioPath $candidateFile.FullName -ExpectedDurationMs $Candidate.DurationMs
     if (-not $duration.Success -or -not $duration.ValidAgainstMetadata) {
         $reason = if (-not $duration.Success) { $duration.Error } else { "Длительность {0:N1} с не согласуется с ожидаемыми {1:N1} с." -f $duration.DurationSeconds, ([double]$Candidate.DurationMs / 1000.0) }
