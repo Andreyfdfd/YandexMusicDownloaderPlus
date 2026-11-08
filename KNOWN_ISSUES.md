@@ -35,13 +35,21 @@
 - Keep `--skip-existing` enabled on every retry. Ask before moving zero-length audio files to a sibling quarantine directory so the downloader has a chance to recreate them; never delete them automatically.
 - Record the source log path in the new run log. Re-enter the saved DPAPI token through the normal token flow; the token is not copied from the old log.
 
+## Implemented in `feature/failed-track-recovery`
+
+- Add a Python helper to enumerate tracks for supported source URLs through the installed `yandex_music` / `ymd` packages and save a per-run source inventory without storing the token in files or logs.
+- Compare the current inventory with the last snapshot for the exact same source URL and emit `library-status-*.csv` rows for removed-from-source tracks, unavailable tracks, and tracks whose reported path is missing, zero-length, or unchanged after a pass. Never delete local music files.
+- Add menu option 9 to build a retry queue from the selected run log, retry each track by direct URL through the main downloader, and offer the `yt-dlp` browser-session fallback for remaining failures.
+- Probe downloaded audio duration with Mutagen and compare it with source metadata. Put unverified/short alternate results in staging; quarantine a newly created primary result if its duration is invalid instead of silently replacing the target.
+
 ## Remaining work
 
-### 1. Reliable upstream counters and audio validation
+### 1. Reliable upstream counters and source inventory
 
-- Exact counts of all playlist entries processed and existing files silently skipped remain unavailable unless the upstream downloader exposes them.
-- File snapshots measure changes in the destination folder during the pass. They do not verify audio duration, decodability, tags, or whether another process changed a file concurrently.
-- Consider adding media-duration validation and a stronger success/failure signal if the upstream downloader exposes enough metadata.
+- Exact counts of files silently skipped remain unavailable unless the upstream downloader exposes them.
+- Source inventory relies on the installed `yandex_music` API and only records changes after a first successful snapshot for the same URL. If the API cannot enumerate a source, downloading continues but the removal comparison is skipped.
+- Duration checks reject obvious short previews, but they do not prove that every frame, tag, or audio segment is correct. Audio should still be spot-checked when a track matters.
+- A nonzero but incomplete file already present before a recovery run is not replaced automatically; option 9 asks whether to preserve it or move it to quarantine.
 
 ### 2. Detecting nonzero partial files
 
