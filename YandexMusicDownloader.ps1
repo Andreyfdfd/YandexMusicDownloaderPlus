@@ -1104,10 +1104,31 @@ function Find-Downloader([string]$PreferredPath) {
     if (-not [string]::IsNullOrWhiteSpace($PreferredPath) -and (Test-Path -LiteralPath $PreferredPath -PathType Leaf)) {
         return $PreferredPath
     }
-    $cmd = Get-Command 'yandex-music-downloader.exe' -CommandType Application -ErrorAction SilentlyContinue
-    if ($null -ne $cmd) { return $cmd.Source }
-    $cmd = Get-Command 'yandex-music-downloader' -CommandType Application -ErrorAction SilentlyContinue
-    if ($null -ne $cmd) { return $cmd.Source }
+
+    foreach ($commandName in @('yandex-music-downloader.exe', 'yandex-music-downloader')) {
+        $commands = @(Get-Command $commandName -CommandType Application -All -ErrorAction SilentlyContinue)
+        foreach ($command in $commands) {
+            $source = [string]$command.Source
+            if ([string]::IsNullOrWhiteSpace($source)) { continue }
+            if (Test-Path -LiteralPath $source -PathType Leaf) { return $source }
+        }
+    }
+
+    # pip installs console entry points into the Scripts folder next to Python.
+    # Search real interpreters as well, because Python's Scripts folder is not
+    # always added to PATH by the Windows installer.
+    $pythonCommands = @(Get-Command 'python.exe' -CommandType Application -All -ErrorAction SilentlyContinue)
+    foreach ($pythonCommand in $pythonCommands) {
+        $pythonPath = [string]$pythonCommand.Source
+        if ([string]::IsNullOrWhiteSpace($pythonPath)) { continue }
+        if ($pythonPath -match '(?i)[\\/]WindowsApps[\\/]') { continue }
+        if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) { continue }
+
+        $pythonRoot = Split-Path -Parent $pythonPath
+        $candidate = Join-Path (Join-Path $pythonRoot 'Scripts') 'yandex-music-downloader.exe'
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+
     return $null
 }
 
