@@ -1417,11 +1417,22 @@ function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
     $outputLines = New-Object 'System.Collections.Generic.List[string]'
     $global:LASTEXITCODE = 0
 
-    & $script:exePath @cliArgs 2>&1 | ForEach-Object {
-        $line = [string]$_
-        [void]$outputLines.Add($line)
-        Write-Host $line
-        Add-Content -LiteralPath $script:logPath -Value $line -Encoding UTF8
+    # Windows PowerShell 5.1 can turn native stderr into terminating errors when
+    # ErrorActionPreference=Stop. Python tracebacks then get truncated to their
+    # first line and the remaining stderr never reaches the log. Temporarily use
+    # Continue while collecting the native process output, then restore the
+    # wrapper's strict preference immediately.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $script:exePath @cliArgs 2>&1 | ForEach-Object {
+            $line = [string]$_
+            [void]$outputLines.Add($line)
+            Write-Host $line
+            Add-Content -LiteralPath $script:logPath -Value $line -Encoding UTF8
+        }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
     }
     $exitCode = $LASTEXITCODE
     $afterAudioFiles = Get-AudioFileSnapshot -RootPath $script:outputDir
@@ -2145,8 +2156,26 @@ try {
     Write-Host 'Если отдельный трек всё равно не скачался, запусти этот же скрипт с прямой ссылкой на сам трек — так проще отделить проблему конкретного трека от проблемы всего плейлиста.' -ForegroundColor DarkGray
     }
 } catch {
-    Write-Host "Ошибка запуска: $($_.Exception.Message)" -ForegroundColor Red
-    if (-not [string]::IsNullOrWhiteSpace($script:logPath)) { Write-Host "Проверь лог: $($script:logPath)" }
+    $launchError = [string]$_.Exception.Message
+    Write-Host "Ошибка запуска: $launchError" -ForegroundColor Red
+    if ($_.InvocationInfo -and $_.InvocationInfo.ScriptLineNumber) {
+        Write-Host "Место в скрипте: строка $($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor DarkYellow
+    }
+    if (-not [string]::IsNullOrWhiteSpace($_.ScriptStackTrace)) {
+        Write-Host 'Стек PowerShell:' -ForegroundColor DarkYellow
+        Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
+    }
+    if (-not [string]::IsNullOrWhiteSpace($script:logPath)) {
+        try {
+            @(
+                ''
+                "Ошибка оболочки: $launchError"
+                "Строка скрипта: $($_.InvocationInfo.ScriptLineNumber)"
+                "Стек PowerShell: $($_.ScriptStackTrace)"
+            ) | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+        } catch { }
+        Write-Host "Проверь лог: $($script:logPath)"
+    }
 } finally {
     if ($tokenPtr -ne [IntPtr]::Zero) {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($tokenPtr)
