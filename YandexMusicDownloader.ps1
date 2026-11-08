@@ -1122,11 +1122,22 @@ function Find-PythonForDownloader([string]$ExecutablePath, [string]$FallbackExec
             if (-not $candidates.Contains($candidate)) { [void]$candidates.Add($candidate) }
         } catch { }
     }
+
+    # Prefer an interpreter next to an existing downloader, then the first real
+    # Python found on PATH. Get-Command can return several matches; never return
+    # their Source properties as an array because the call operator needs one path.
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
     }
-    $cmd = Get-Command 'python.exe' -CommandType Application -ErrorAction SilentlyContinue
-    if ($null -ne $cmd) { return $cmd.Source }
+
+    $commands = @(Get-Command 'python.exe' -CommandType Application -All -ErrorAction SilentlyContinue)
+    foreach ($command in $commands) {
+        $source = [string]$command.Source
+        if ([string]::IsNullOrWhiteSpace($source)) { continue }
+        if ($source -match '(?i)[\\/]WindowsApps[\\/]') { continue }
+        if (Test-Path -LiteralPath $source -PathType Leaf) { return $source }
+    }
+
     return $null
 }
 
