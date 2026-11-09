@@ -99,9 +99,13 @@ if (-not (Test-Path -LiteralPath $setupExe -PathType Leaf)) { throw "Итого�
 # bundled CLI. This validates extraction, the embedded runtime, and the launcher.
 $smokeDir = Join-Path $env:RUNNER_TEMP 'YMDPlus-Installer-Smoke'
 if (Test-Path -LiteralPath $smokeDir) { Remove-Item -LiteralPath $smokeDir -Recurse -Force }
-$smokeArgs = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',"/DIR=$smokeDir")
+$smokeLog = Join-Path $env:RUNNER_TEMP 'YMDPlus-Installer-Smoke.log'
+$smokeArgs = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',"/LOG=$smokeLog",("/DIR=" + $smokeDir))
 $smokeInstall = Start-Process -FilePath $setupExe -ArgumentList $smokeArgs -Wait -PassThru
-if ($smokeInstall.ExitCode -ne 0) { throw "Тестовая установка завершилась с кодом $($smokeInstall.ExitCode)." }
+if ($smokeInstall.ExitCode -ne 0) {
+    $setupDetails = if (Test-Path -LiteralPath $smokeLog) { (Get-Content -LiteralPath $smokeLog -Tail 100) -join "`n" } else { 'Журнал Inno Setup не был создан.' }
+    throw "Тестовая установка завершилась с кодом $($smokeInstall.ExitCode). Журнал Inno Setup:`n$setupDetails"
+}
 
 $installedLauncher = Join-Path $smokeDir 'runtime\Scripts\yandex-music-downloader.exe'
 $installedPython = Join-Path $smokeDir 'runtime\python.exe'
