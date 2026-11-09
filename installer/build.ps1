@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
 $payload = Join-Path $repoRoot 'artifacts\\payload'
 $runtime = Join-Path $payload 'runtime'
 $baseSite = Join-Path $runtime 'Lib\\site-packages'
