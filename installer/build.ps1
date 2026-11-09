@@ -1,5 +1,5 @@
 param(
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\\artifacts\\output')
+    [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\artifacts\output')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -7,10 +7,10 @@ $ProgressPreference = 'SilentlyContinue'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
-$payload = Join-Path $repoRoot 'artifacts\\payload'
+$payload = Join-Path $repoRoot 'artifacts\payload'
 $runtime = Join-Path $payload 'runtime'
-$baseSite = Join-Path $runtime 'Lib\\site-packages'
-$optionalSite = Join-Path $runtime 'Optional\\Lib\\site-packages'
+$baseSite = Join-Path $runtime 'Lib\site-packages'
+$optionalSite = Join-Path $runtime 'Optional\Lib\site-packages'
 $runtimeScripts = Join-Path $runtime 'Scripts'
 
 if (Test-Path -LiteralPath $payload) { Remove-Item -LiteralPath $payload -Recurse -Force }
@@ -33,8 +33,8 @@ if ($null -eq $pthFile) { throw 'В embeddable Python не найден файл
 @(
     'python314.zip'
     '.'
-    'Lib\\site-packages'
-    'Optional\\Lib\\site-packages'
+    'Lib\site-packages'
+    'Optional\Lib\site-packages'
     'import site'
 ) | Set-Content -LiteralPath $pthFile.FullName -Encoding ASCII
 
@@ -54,14 +54,14 @@ $embeddedPython = Join-Path $runtime 'python.exe'
 & $embeddedPython -c "import ymd.cli, yandex_music, mutagen, pip; print('Embedded Python runtime: OK')"
 if ($LASTEXITCODE -ne 0) { throw 'Проверка импортов встроенного Python завершилась ошибкой.' }
 
-Push-Location (Join-Path $repoRoot 'tools\\launcher')
+Push-Location (Join-Path $repoRoot 'tools\launcher')
 try {
     $env:GO111MODULE = 'on'
     go build -trimpath -ldflags='-s -w' -o (Join-Path $runtimeScripts 'yandex-music-downloader.exe') .
     if ($LASTEXITCODE -ne 0) { throw 'Не удалось собрать launcher.exe.' }
 } finally {
     Pop-Location
-    Remove-Item Env:\\GO111MODULE -ErrorAction SilentlyContinue
+    Remove-Item Env:\GO111MODULE -ErrorAction SilentlyContinue
 }
 
 # Include only the files required by the Windows installer.
@@ -70,7 +70,7 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'Запустить_загрузку
 Copy-Item -LiteralPath (Join-Path $repoRoot 'README.md') -Destination $payload
 Copy-Item -LiteralPath (Join-Path $repoRoot 'ПРОЧТИ_МЕНЯ.txt') -Destination $payload
 New-Item -ItemType Directory -Force -Path (Join-Path $payload 'tools') | Out-Null
-Copy-Item -LiteralPath (Join-Path $repoRoot 'tools\\source_inventory.py') -Destination (Join-Path $payload 'tools')
+Copy-Item -LiteralPath (Join-Path $repoRoot 'tools\source_inventory.py') -Destination (Join-Path $payload 'tools')
 
 $innosetupUrl = 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe'
 $innosetupInstaller = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
@@ -82,8 +82,8 @@ $install = Start-Process -FilePath $innosetupInstaller -ArgumentList @('/VERYSIL
 if ($install.ExitCode -ne 0) { throw "Установка Inno Setup завершилась с кодом $($install.ExitCode)." }
 
 $isccCandidates = @(
-    (Join-Path $env:ProgramFiles 'Inno Setup 7\\ISCC.exe'),
-    (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 7\\ISCC.exe')
+    (Join-Path $env:ProgramFiles 'Inno Setup 7\ISCC.exe'),
+    (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 7\ISCC.exe')
 )
 $iscc = $isccCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
 if (-not $iscc) { throw 'ISCC.exe Inno Setup 7 не найден после установки.' }
