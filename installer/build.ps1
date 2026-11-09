@@ -103,10 +103,10 @@ $smokeArgs = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',"/DIR=$smok
 $smokeInstall = Start-Process -FilePath $setupExe -ArgumentList $smokeArgs -Wait -PassThru
 if ($smokeInstall.ExitCode -ne 0) { throw "Тестовая установка завершилась с кодом $($smokeInstall.ExitCode)." }
 
-$installedLauncher = Join-Path $smokeDir 'runtime\\Scripts\\yandex-music-downloader.exe'
-$installedPython = Join-Path $smokeDir 'runtime\\python.exe'
+$installedLauncher = Join-Path $smokeDir 'runtime\Scripts\yandex-music-downloader.exe'
+$installedPython = Join-Path $smokeDir 'runtime\python.exe'
 $installedScript = Join-Path $smokeDir 'YandexMusicDownloader.ps1'
-$installedInventory = Join-Path $smokeDir 'tools\\source_inventory.py'
+$installedInventory = Join-Path $smokeDir 'tools\source_inventory.py'
 foreach ($requiredFile in @($installedLauncher,$installedPython,$installedScript,$installedInventory)) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "После тестовой установки отсутствует обязательный файл: $requiredFile"
