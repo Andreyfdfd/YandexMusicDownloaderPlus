@@ -1,0 +1,67 @@
+name: Build Windows installer and publish preview
+
+on:
+  push:
+    branches:
+      - release/windows-installer-preview
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-installer-preview
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Set up Go launcher compiler
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+
+      - name: Build embedded runtime and installer
+        shell: pwsh
+        run: .\installer\build.ps1
+
+      - name: Upload build artifact for diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: YandexMusicDownloaderPlus-Windows-Installer
+          path: artifacts/output/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish separate preview release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.2.0-preview.1
+          target_commitish: ${{ github.sha }}
+          name: Yandex Music Downloader Plus 0.2.0 — Windows Installer Preview 1
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          body: |
+            Первый отдельный установочный выпуск Downloader Plus.
+
+            Установщик включает переносимый CPython 3.14, основной yandex-music-downloader, PowerShell-оболочку и средство снимков/отчётов. Системные Python, Git и pip отдельно устанавливать не требуется.
+
+            В мастере установки можно выбрать папку программы, компоненты, ярлык и каталог музыкальной библиотеки. По умолчанию каталог музыки — %USERPROFILE%\\Music на системном диске; создание папки сразу при установке можно отключить.
+
+            Резервный yt-dlp backend можно предустановить как дополнительный компонент или установить при первом использовании пункта меню.
+
+            Это предварительный выпуск для установки и тестирования на Windows. Установщик пока не подписан сертификатом издателя, поэтому Windows SmartScreen может показать предупреждение.
+          files: |
+            artifacts/output/YandexMusicDownloaderPlus-Setup-0.2.0-preview.1.exe
+            artifacts/output/SHA256SUMS.txt
