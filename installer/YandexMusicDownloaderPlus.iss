@@ -18,8 +18,8 @@ DefaultDirName={localappdata}\Programs\YandexMusicDownloaderPlus
 DefaultGroupName=Yandex Music Downloader Plus
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-ArchitecturesAllowed=x64
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir={#OutputDir}
 OutputBaseFilename=YandexMusicDownloaderPlus-Setup-{#AppVersion}
@@ -68,6 +68,16 @@ Filename: "{app}\Запустить_загрузку.bat"; Description: "Зап�
 var
   MusicFolderPage: TInputDirWizardPage;
 
+function GetDefaultMusicPath(): String;
+var
+  ProfilePath: String;
+begin
+  ProfilePath := GetEnv('USERPROFILE');
+  if ProfilePath = '' then
+    ProfilePath := ExtractFileDir(ExpandConstant('{userdocs}'));
+  Result := AddBackslash(ProfilePath) + 'Music';
+end;
+
 procedure InitializeWizard();
 begin
   MusicFolderPage := CreateInputDirPage(
@@ -79,7 +89,7 @@ begin
     ''
   );
   MusicFolderPage.Add('Путь к музыкальной библиотеке:');
-  MusicFolderPage.Values[0] := ExpandConstant('{userprofile}\Music');
+  MusicFolderPage.Values[0] := GetDefaultMusicPath();
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -91,7 +101,7 @@ begin
   begin
     MusicPath := Trim(MusicFolderPage.Values[0]);
     if MusicPath = '' then
-      MusicPath := ExpandConstant('{userprofile}\Music');
+      MusicPath := GetDefaultMusicPath();
 
     if WizardIsTaskSelected('createmusicfolder') then
     begin
