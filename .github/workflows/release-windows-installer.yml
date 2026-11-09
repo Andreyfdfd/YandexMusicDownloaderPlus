@@ -46,14 +46,14 @@ jobs:
       - name: Publish separate preview release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.0-preview.1
+          tag_name: v0.2.0-preview.2
           target_commitish: ${{ github.sha }}
-          name: Yandex Music Downloader Plus 0.2.0 — Windows Installer Preview 1
+          name: Yandex Music Downloader Plus 0.2.0 — Windows Installer Preview 2
           prerelease: true
           make_latest: false
           overwrite_files: true
           body: |
-            Первый отдельный установочный выпуск Downloader Plus.
+            Второй предварительный установочный выпуск Downloader Plus. Исправлены обнаруженные в Windows CI ошибки и добавлена автоматическая тестовая установка с проверкой встроенного CLI.
 
             Установщик включает переносимый CPython 3.14, основной yandex-music-downloader, PowerShell-оболочку и средство снимков/отчётов. Системные Python, Git и pip отдельно устанавливать не требуется.
 
@@ -63,5 +63,5 @@ jobs:
 
             Это предварительный выпуск для установки и тестирования на Windows. Установщик пока не подписан сертификатом издателя, поэтому Windows SmartScreen может показать предупреждение.
           files: |
-            artifacts/output/YandexMusicDownloaderPlus-Setup-0.2.0-preview.1.exe
+            artifacts/output/YandexMusicDownloaderPlus-Setup-0.2.0-preview.2.exe
             artifacts/output/SHA256SUMS.txt
