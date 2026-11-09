@@ -92,7 +92,7 @@ $installerScript = Join-Path $PSScriptRoot 'YandexMusicDownloaderPlus.iss'
 & $iscc "/DPayloadDir=$payload" "/DOutputDir=$OutputDirectory" $installerScript
 if ($LASTEXITCODE -ne 0) { throw "Компиляция установщика завершилась с кодом $LASTEXITCODE." }
 
-$setupExe = Join-Path $OutputDirectory 'YandexMusicDownloaderPlus-Setup-0.2.0-preview.1.exe'
+$setupExe = Join-Path $OutputDirectory 'YandexMusicDownloaderPlus-Setup-0.2.0-preview.2.exe'
 if (-not (Test-Path -LiteralPath $setupExe -PathType Leaf)) { throw "Итоговый EXE не найден: $setupExe" }
 
 # Install the just-built setup silently on the Windows runner and invoke the
