@@ -94,6 +94,39 @@ if ($LASTEXITCODE -ne 0) { throw "Компиляция установщика з
 
 $setupExe = Join-Path $OutputDirectory 'YandexMusicDownloaderPlus-Setup-0.2.0-preview.1.exe'
 if (-not (Test-Path -LiteralPath $setupExe -PathType Leaf)) { throw "Итоговый EXE не найден: $setupExe" }
+
+# Install the just-built setup silently on the Windows runner and invoke the
+# bundled CLI. This validates extraction, the embedded runtime, and the launcher.
+$smokeDir = Join-Path $env:RUNNER_TEMP 'YMDPlus-Installer-Smoke'
+if (Test-Path -LiteralPath $smokeDir) { Remove-Item -LiteralPath $smokeDir -Recurse -Force }
+$smokeArgs = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',"/DIR=$smokeDir")
+$smokeInstall = Start-Process -FilePath $setupExe -ArgumentList $smokeArgs -Wait -PassThru
+if ($smokeInstall.ExitCode -ne 0) { throw "Тестовая установка завершилась с кодом $($smokeInstall.ExitCode)." }
+
+$installedLauncher = Join-Path $smokeDir 'runtime\\Scripts\\yandex-music-downloader.exe'
+$installedPython = Join-Path $smokeDir 'runtime\\python.exe'
+$installedScript = Join-Path $smokeDir 'YandexMusicDownloader.ps1'
+$installedInventory = Join-Path $smokeDir 'tools\\source_inventory.py'
+foreach ($requiredFile in @($installedLauncher,$installedPython,$installedScript,$installedInventory)) {
+    if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
+        throw "После тестовой установки отсутствует обязательный файл: $requiredFile"
+    }
+}
+
+$cliHelp = (& $installedLauncher --help 2>&1 | Out-String)
+$launcherExit = $LASTEXITCODE
+if ($launcherExit -ne 0 -or $cliHelp -notmatch '--token' -or $cliHelp -notmatch '--url') {
+    throw "Тест встроенного CLI завершился с кодом $launcherExit или не вернул ожидаемые параметры --token/--url.\n$cliHelp"
+}
+
+$settingsFile = Join-Path (Join-Path $env:APPDATA 'YandexMusicDownloaderPlus') 'music-path.txt'
+if (-not (Test-Path -LiteralPath $settingsFile -PathType Leaf)) {
+    throw 'Тестовая установка не сохранила выбранную музыкальную папку в AppData.'
+}
+Write-Host 'Smoke test: установщик, встроенный Python, CLI launcher и настройка Music — OK.' -ForegroundColor Green
+Remove-Item -LiteralPath $smokeDir -Recurse -Force
+Remove-Item -LiteralPath $settingsFile -Force -ErrorAction SilentlyContinue
+
 $hash = (Get-FileHash -LiteralPath $setupExe -Algorithm SHA256).Hash.ToLowerInvariant()
 "$hash  $([IO.Path]::GetFileName($setupExe))" | Set-Content -LiteralPath (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Encoding ASCII
 Write-Host "Готово: $setupExe" -ForegroundColor Green
