@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0-preview.2 — 2026-11-09
+
+- Fix the Inno Setup default Music path using the current Windows user's USERPROFILE environment variable.
+- Invoke the upstream downloader's registered `ymd.cli:main` entry point from the embedded launcher and force UTF-8 mode.
+- Add a Windows smoke test that silently installs the setup, checks required files, runs the bundled CLI help, and confirms the Music path setting is saved.
+- Use a separate preview.2 release rather than reusing the first test binary.
+
+
 ## 0.2.0-preview.1 — 2026-11-09
 
 - Added a separate Windows installer built on Windows CI with a bundled portable CPython 3.14 runtime and the primary Yandex Music downloader.
