@@ -1677,7 +1677,7 @@ function Invoke-AlternativeTrack {
     Write-Host 'РЕЗЕРВНЫЙ ЗАГРУЗЧИК ДЛЯ ОДНОГО ПРОБЛЕМНОГО ТРЕКА' -ForegroundColor Cyan
     Write-Host 'Используется yt-dlp + актуальный плагин Yandex Music; авторизация берётся из браузерной сессии.' -ForegroundColor Gray
     Write-Host 'Файл будет помещён в отдельную папку _YandexMusic_Fallback, а не смешан с библиотекой автоматически.' -ForegroundColor Yellow
-    Write-Host 'Это позволяет проверить полную длительность и не создать незаметный дубликат в D:\Music.' -ForegroundColor Gray
+    Write-Host "Это позволяет проверить полную длительность и не смешать файл автоматически с основной библиотекой: $defaultDir." -ForegroundColor Gray
     Write-Host ''
 
     $trackUrl = Read-Host 'Прямая ссылка на ОДИН трек (пример: /album/123/track/456)'
