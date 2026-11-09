@@ -2,9 +2,29 @@
 $ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$defaultExe = Join-Path $env:LOCALAPPDATA 'Python\pythoncore-3.14-64\Scripts\yandex-music-downloader.exe'
-$defaultUrl = 'https://music.yandex.ru/playlists/lk.0ad9d4f5-d068-466f-9ddc-66cccbc68131'
-$defaultDir = 'D:\Music'
+$bundledDownloader = Join-Path $scriptRoot 'runtime\Scripts\yandex-music-downloader.exe'
+if (Test-Path -LiteralPath $bundledDownloader -PathType Leaf) {
+    $defaultExe = $bundledDownloader
+} else {
+    # Developer/source-checkout fallback: Find-Downloader will also inspect PATH.
+    $defaultExe = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python314\Scripts\yandex-music-downloader.exe'
+}
+# Never publish a personal playlist identifier as a default in a public release.
+$defaultUrl = ''
+# The installer stores the selected Music folder here. On a fresh Windows profile
+# this resolves to the user's Music library on the system drive (normally C:).
+$defaultDir = Join-Path $env:USERPROFILE 'Music'
+$musicPathConfig = Join-Path (Join-Path $env:APPDATA 'YandexMusicDownloaderPlus') 'music-path.txt'
+if (Test-Path -LiteralPath $musicPathConfig -PathType Leaf) {
+    try {
+        $configuredMusicPath = (Get-Content -LiteralPath $musicPathConfig -Raw -ErrorAction Stop).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($configuredMusicPath)) {
+            $defaultDir = $configuredMusicPath
+        }
+    } catch {
+        Write-Host "Не удалось прочитать настройку папки музыки; используется $defaultDir. $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
 $upstreamArchive = 'https://github.com/llistochek/yandex-music-downloader/archive/main.zip'
 
 $script:exePath = $null
@@ -878,6 +898,35 @@ function Move-CandidateFilesToQuarantine([object[]]$Queue, [string]$RootPath, [b
     return [pscustomobject]@{ Moved = $moved; Path = $qPath }
 }
 
+function Ensure-YtDlpBackend([string]$PythonExe) {
+    # The installer may already include yt-dlp and its Yandex Music plugin in the
+    # optional component. Avoid a needless network install on every fallback run.
+    $previousPreference = $ErrorActionPreference
+    $probeExit = 1
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $PythonExe -c "import importlib.metadata as m; m.version('yt-dlp'); m.version('yt-dlp-yandex-music')" 2>&1 | Out-Null
+        $probeExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    if ($probeExit -eq 0) {
+        Write-Host 'Резервный backend уже установлен.' -ForegroundColor Green
+        return $true
+    }
+
+    Write-Host 'Устанавливаю недостающие компоненты yt-dlp...' -ForegroundColor Gray
+    $installExit = 1
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $PythonExe -m pip install --upgrade 'yt-dlp[default]' 'yt-dlp-yandex-music'
+        $installExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    return ($installExit -eq 0)
+}
+
 function Initialize-YtDlpRecovery([string]$PythonExe) {
     Write-Host ''
     Write-Host 'Основной загрузчик не смог получить трек. Можно попробовать резервный источник через yt-dlp и авторизованную браузерную сессию.' -ForegroundColor Yellow
@@ -887,9 +936,8 @@ function Initialize-YtDlpRecovery([string]$PythonExe) {
     Write-Host '  1 — Chrome'; Write-Host '  2 — Edge'; Write-Host '  3 — Firefox'; Write-Host '  4 — Brave'
     $browserChoice = Read-MenuChoice 'Браузер' @('1','2','3','4') '1'
     $browser = switch ($browserChoice) { '1' { 'chrome' } '2' { 'edge' } '3' { 'firefox' } '4' { 'brave' } }
-    Write-Host 'Проверяю/устанавливаю yt-dlp и плагин один раз для всей очереди...' -ForegroundColor Gray
-    & $PythonExe -m pip install --upgrade 'yt-dlp[default]' 'yt-dlp-yandex-music'
-    if ($LASTEXITCODE -ne 0) {
+    Write-Host 'Проверяю наличие yt-dlp и плагина...' -ForegroundColor Gray
+    if (-not (Ensure-YtDlpBackend -PythonExe $PythonExe)) {
         Write-Host 'Установка резервного источника не удалась; продолжу очередь только основным загрузчиком.' -ForegroundColor Yellow
         return [pscustomobject]@{ Enabled = $false; Browser = $browser; PythonExe = $PythonExe }
     }
@@ -1629,7 +1677,7 @@ function Invoke-AlternativeTrack {
     Write-Host 'РЕЗЕРВНЫЙ ЗАГРУЗЧИК ДЛЯ ОДНОГО ПРОБЛЕМНОГО ТРЕКА' -ForegroundColor Cyan
     Write-Host 'Используется yt-dlp + актуальный плагин Yandex Music; авторизация берётся из браузерной сессии.' -ForegroundColor Gray
     Write-Host 'Файл будет помещён в отдельную папку _YandexMusic_Fallback, а не смешан с библиотекой автоматически.' -ForegroundColor Yellow
-    Write-Host 'Это позволяет проверить полную длительность и не создать незаметный дубликат в D:\Music.' -ForegroundColor Gray
+    Write-Host "Это позволяет проверить полную длительность и не смешать файл автоматически с основной библиотекой: $defaultDir." -ForegroundColor Gray
     Write-Host ''
 
     $trackUrl = Read-Host 'Прямая ссылка на ОДИН трек (пример: /album/123/track/456)'
@@ -1665,9 +1713,8 @@ function Invoke-AlternativeTrack {
 
     Write-Host ''
     Write-Host "Python: $pythonExe" -ForegroundColor DarkGray
-    Write-Host 'Проверяю/устанавливаю yt-dlp и плагин. Токен из основного режима здесь не используется.' -ForegroundColor Gray
-    & $pythonExe -m pip install --upgrade 'yt-dlp[default]' yt-dlp-yandex-music
-    if ($LASTEXITCODE -ne 0) {
+    Write-Host 'Проверяю наличие yt-dlp и плагина. Токен из основного режима здесь не используется.' -ForegroundColor Gray
+    if (-not (Ensure-YtDlpBackend -PythonExe $pythonExe)) {
         Write-Host 'Не удалось установить резервный backend. Подробности показаны выше.' -ForegroundColor Red
         return
     }
@@ -1852,8 +1899,19 @@ if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings) 
     $script:outputDir = $script:resumeSettings.OutputDir
     Write-Host 'Для выбранного режима используются ссылка и папка из лога.' -ForegroundColor Gray
 } else {
-    $sourceUrl = Read-DefaultText 'Ссылка на плейлист/альбом/исполнителя/отдельный трек' $defaultUrl
-    $script:sourceUrl = $sourceUrl
+    if (@('1','3') -contains $actionChoice) {
+        if ([string]::IsNullOrWhiteSpace($defaultUrl)) {
+            $sourceUrl = Read-Host 'Ссылка на плейлист/альбом/исполнителя/отдельный трек (обязательно)'
+            while ([string]::IsNullOrWhiteSpace($sourceUrl)) {
+                Write-Host 'Нужно указать прямую ссылку Яндекс Музыки.' -ForegroundColor Yellow
+                $sourceUrl = Read-Host 'Ссылка на источник'
+            }
+            $sourceUrl = $sourceUrl.Trim()
+        } else {
+            $sourceUrl = Read-DefaultText 'Ссылка на плейлист/альбом/исполнителя/отдельный трек' $defaultUrl
+        }
+        $script:sourceUrl = $sourceUrl
+    }
     $script:outputDir = Read-DefaultText 'Папка для сохранения' $defaultDir
 }
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.0-preview.2 — 2026-11-09
+
+- Fix the Inno Setup default Music path using the current Windows user's USERPROFILE environment variable.
+- Invoke the upstream downloader's registered `ymd.cli:main` entry point from the embedded launcher and force UTF-8 mode.
+- Add a Windows smoke test that silently installs the setup, checks required files, runs the bundled CLI help, and confirms the Music path setting is saved.
+- Use a separate preview.2 release rather than reusing the first test binary.
+
+
+## 0.2.0-preview.1 — 2026-11-09
+
+- Added a separate Windows installer built on Windows CI with a bundled portable CPython 3.14 runtime and the primary Yandex Music downloader.
+- Added a native launcher that invokes the embedded Python module without depending on a system Python installation or hard-coded interpreter paths.
+- Added selectable full/compact/custom installation types, optional yt-dlp preinstallation, optional documentation, desktop shortcut, and a selectable Music directory.
+- Defaulted the music destination to the current Windows user's Music folder and moved its configuration to the user's AppData profile.
+- Removed the personal liked-playlist URL from the release defaults; the source URL is now requested explicitly.
+- Added a separate GitHub pre-release workflow and SHA-256 checksum for the installer.
+
+
 ## 0.1.6 — 2026-10-28
 
 - Added source inventory snapshots and `library-status-*.csv` reports to list tracks removed from the same source since the previous snapshot and tracks known to have failed during a run.
