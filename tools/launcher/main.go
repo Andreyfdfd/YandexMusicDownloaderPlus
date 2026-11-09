@@ -27,7 +27,7 @@ func main() {
 	args := make([]string, 0, len(os.Args)+4)
 	// The upstream package registers ymd.cli:main as a console-script entry
 	// point, but ymd/cli.py does not execute main() when run with python -m.
-	args = append(args, "-u", "-c", "from ymd.cli import main; raise SystemExit(main())")
+	args = append(args, "-X", "utf8", "-u", "-c", "from ymd.cli import main; raise SystemExit(main())")
 	args = append(args, os.Args[1:]...)
 
 	cmd := exec.Command(pythonExe, args...)
