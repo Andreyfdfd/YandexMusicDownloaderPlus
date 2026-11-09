@@ -123,9 +123,20 @@ if ($launcherExit -ne 0 -or $cliHelp -notmatch '--token' -or $cliHelp -notmatch 
     throw "Тест встроенного CLI завершился с кодом $launcherExit или не вернул ожидаемые параметры --token/--url.\n$cliHelp"
 }
 
+
+$optionalHelp = (& $installedPython -c "import yt_dlp; import yt_dlp_plugins.extractor.yandex_music_v2; print('Optional Yandex Music backend: OK')" 2>&1 | Out-String)
+$optionalExit = $LASTEXITCODE
+if ($optionalExit -ne 0 -or $optionalHelp -notmatch 'Optional Yandex Music backend') {
+    throw "Дополнительный backend не установлен или не импортируется (код $optionalExit).`n$optionalHelp"
+}
+
 $settingsFile = Join-Path (Join-Path $env:APPDATA 'YandexMusicDownloaderPlus') 'music-path.txt'
 if (-not (Test-Path -LiteralPath $settingsFile -PathType Leaf)) {
     throw 'Тестовая установка не сохранила выбранную музыкальную папку в AppData.'
+}
+$musicPath = (Get-Content -LiteralPath $settingsFile -Raw).Trim()
+if (-not (Test-Path -LiteralPath $musicPath -PathType Container)) {
+    throw "Установщик не создал отмеченную по умолчанию папку музыки: $musicPath"
 }
 Write-Host 'Smoke test: установщик, встроенный Python, CLI launcher и настройка Music — OK.' -ForegroundColor Green
 Remove-Item -LiteralPath $smokeDir -Recurse -Force
