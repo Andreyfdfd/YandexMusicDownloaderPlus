@@ -1,5 +1,5 @@
 #define AppName "Yandex Music Downloader Plus"
-#define AppVersion "0.2.0-preview.1"
+#define AppVersion "0.2.0-preview.2"
 #define AppPublisher "Andreyfdfd"
 #ifndef PayloadDir
   #define PayloadDir "..\artifacts\payload"
