@@ -30,7 +30,7 @@
 
 ## Установка Windows
 
-Для обычного использования скачайте отдельный предварительный релиз [Windows Installer Preview](https://github.com/Andreyfdfd/YandexMusicDownloaderPlus/releases/tag/v0.2.0-preview.1) и запустите `YandexMusicDownloaderPlus-Setup-0.2.0-preview.1.exe`. Установщик включает переносимый CPython 3.14 и основной загрузчик; отдельно устанавливать Git или Python не требуется.
+Для обычного использования скачайте отдельный предварительный релиз [Windows Installer Preview](https://github.com/Andreyfdfd/YandexMusicDownloaderPlus/releases/tag/v0.2.0-preview.2) и запустите `YandexMusicDownloaderPlus-Setup-0.2.0-preview.2.exe`. Установщик включает переносимый CPython 3.14 и основной загрузчик; отдельно устанавливать Git или Python не требуется.
 
 В мастере можно выбрать каталог установки, дополнительные компоненты, ярлык и папку музыкальной библиотеки. По умолчанию предлагается `%USERPROFILE%\\Music` (обычно на диске C:). Создание этой папки непосредственно во время установки можно отключить; программа создаст её при первом запуске загрузки. Токен хранится отдельно от каталога программы через Windows DPAPI.
 
