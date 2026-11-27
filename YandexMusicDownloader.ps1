@@ -535,8 +535,19 @@ function Invoke-PlaylistMetadataExport([string]$SourceUrl, [string]$PythonExe, [
         if ($exitCode -ne 0) {
             return [pscustomobject]@{ Success = $false; Error = "Экспортёр завершился с кодом $exitCode. $rawOutput"; Files = $null; Count = 0 }
         }
+        $jsonResultLine = @(
+            $rawOutput -split '\r?\n' |
+                Where-Object {
+                    $candidateLine = $_.Trim()
+                    $candidateLine.StartsWith('{') -and $candidateLine.EndsWith('}')
+                } |
+                Select-Object -Last 1
+        )
+        if ($jsonResultLine.Count -eq 0) {
+            return [pscustomobject]@{ Success = $false; Error = "Экспортёр не вернул JSON-результат. Вывод: $rawOutput"; Files = $null; Count = 0 }
+        }
         try {
-            $payload = $rawOutput | ConvertFrom-Json -ErrorAction Stop
+            $payload = $jsonResultLine[0] | ConvertFrom-Json -ErrorAction Stop
         } catch {
             return [pscustomobject]@{ Success = $false; Error = "Не удалось разобрать результат экспорта: $($_.Exception.Message). Вывод: $rawOutput"; Files = $null; Count = 0 }
         }
