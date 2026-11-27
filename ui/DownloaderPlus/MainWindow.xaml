@@ -43,25 +43,25 @@
                             <TextBlock Text="Загрузка музыки" VerticalAlignment="Center"/>
                         </StackPanel>
                     </Button>
-                    <Button Style="{StaticResource NavButton}" Click="NavExport_Click">
+                    <Button x:Name="NavExport" Style="{StaticResource NavButton}" Click="NavExport_Click">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="▤" Width="30" FontSize="17" Foreground="#A5B4FC"/>
                             <TextBlock Text="Экспорт библиотеки" VerticalAlignment="Center"/>
                         </StackPanel>
                     </Button>
-                    <Button Style="{StaticResource NavButton}" Click="NavRecovery_Click">
+                    <Button x:Name="NavRecovery" Style="{StaticResource NavButton}" Click="NavRecovery_Click">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="↻" Width="30" FontSize="19" Foreground="#6EE7B7"/>
                             <TextBlock Text="Восстановление" VerticalAlignment="Center"/>
                         </StackPanel>
                     </Button>
-                    <Button Style="{StaticResource NavButton}" Click="NavLogs_Click">
+                    <Button x:Name="NavLogs" Style="{StaticResource NavButton}" Click="NavLogs_Click">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="▤" Width="30" FontSize="17" Foreground="#FCD34D"/>
                             <TextBlock Text="Журналы и отчёты" VerticalAlignment="Center"/>
                         </StackPanel>
                     </Button>
-                    <Button Style="{StaticResource NavButton}" Click="NavSettings_Click">
+                    <Button x:Name="NavSettings" Style="{StaticResource NavButton}" Click="NavSettings_Click">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="⚙" Width="30" FontSize="17" Foreground="#CBD5E1"/>
                             <TextBlock Text="Настройки" VerticalAlignment="Center"/>
