@@ -1104,13 +1104,16 @@ function Invoke-DirectApiRecoveryTrack([object]$Candidate, [string]$PythonExe, [
 
     $previousToken = $env:YMDPLUS_BACKEND_TOKEN
     $env:YMDPLUS_BACKEND_TOKEN = $script:token
+    $cancelFile = [string]$env:YMDPLUS_GUI_CANCEL_FILE
     $jsonLines = New-Object 'System.Collections.Generic.List[string]'
     $outputLines = New-Object 'System.Collections.Generic.List[string]'
     $previousPreference = $ErrorActionPreference
     $exitCode = 1
     try {
         $ErrorActionPreference = 'Continue'
-        & $PythonExe $backendScript --url ([string]$Candidate.TrackUrl) --output-dir $trackStage --quality $backendQuality 2>&1 | ForEach-Object {
+        $backendArgs = @($backendScript, '--url', [string]$Candidate.TrackUrl, '--output-dir', $trackStage, '--quality', $backendQuality)
+        if (-not [string]::IsNullOrWhiteSpace($cancelFile)) { $backendArgs += @('--cancel-file', $cancelFile) }
+        & $PythonExe @backendArgs 2>&1 | ForEach-Object {
             $line = [string]$_
             [void]$outputLines.Add($line)
             if ($line.TrimStart().StartsWith('{') -and $line -match '"success"') {
