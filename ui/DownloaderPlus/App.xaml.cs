@@ -39,9 +39,18 @@ namespace DownloaderPlus
                     }
 
                     // Load the full WPF window and all page resources without showing it.
-                    // This catches runtime XAML/resource errors in the installed app.
-                    var uiProbe = new MainWindow();
-                    uiProbe.Close();
+                    // Explicit shutdown keeps the test in control while the probe window closes.
+                    var previousShutdownMode = ShutdownMode;
+                    ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                    try
+                    {
+                        var uiProbe = new MainWindow();
+                        uiProbe.Close();
+                    }
+                    finally
+                    {
+                        ShutdownMode = previousShutdownMode;
+                    }
 
                     Shutdown(0);
                 }
