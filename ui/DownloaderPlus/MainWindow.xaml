@@ -71,7 +71,7 @@
 
                 <StackPanel Grid.Row="4">
                     <Border Height="1" Background="#273449" Margin="4,0,4,14"/>
-                    <TextBlock Text="СОСТОЯНИЕ" FontSize="10" CharacterSpacing="1.4"
+                    <TextBlock Text="СОСТОЯНИЕ" FontSize="10"
                                Foreground="#64748B" Margin="5,0,0,8"/>
                     <StackPanel Orientation="Horizontal" Margin="5,0,0,4">
                         <Ellipse x:Name="StatusDot" Width="8" Height="8" Fill="{StaticResource SuccessBrush}" VerticalAlignment="Center"/>
