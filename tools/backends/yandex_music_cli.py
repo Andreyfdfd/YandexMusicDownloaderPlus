@@ -24,6 +24,7 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--quality", choices=("auto", "flac", "mp3-320"), default="auto")
     parser.add_argument("--lyrics", action="store_true")
+    parser.add_argument("--cancel-file", default="")
     args = parser.parse_args()
 
     token = os.environ.get("YMDPLUS_BACKEND_TOKEN")
@@ -33,10 +34,8 @@ def main() -> int:
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    progress_messages = []
-
-    def info_cb(info: dict) -> None:
-        progress_messages.append(str(info.get("title") or ""))
+    def cancel_check() -> bool:
+        return bool(args.cancel_file) and Path(args.cancel_file).exists()
 
     def progress_cb(progress: dict) -> None:
         message = progress.get("message")
@@ -51,9 +50,8 @@ def main() -> int:
                 args.url,
                 str(output_dir),
                 token=token,
-                info_cb=info_cb,
                 progress_cb=progress_cb,
-                cancel_check=lambda: False,
+                cancel_check=cancel_check,
                 quality=args.quality,
                 want_lyrics=args.lyrics,
             )
@@ -63,6 +61,8 @@ def main() -> int:
             path.relative_to(root)
         except ValueError:
             raise RuntimeError("Backend produced a path outside the assigned staging directory.")
+        if cancel_check():
+            raise RuntimeError("Операция отменена пользователем.")
         if not path.is_file() or path.stat().st_size <= 0:
             raise RuntimeError("Backend did not produce a non-empty audio file.")
         print(json.dumps({"success": True, "path": str(path), "size": path.stat().st_size}, ensure_ascii=False))
