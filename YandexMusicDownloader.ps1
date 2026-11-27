@@ -1054,6 +1054,13 @@ function Test-NonRecoverableServiceFailure([string]$Details) {
     return $Details -match '(?i)(не доступен для скачивания|недоступен для скачивания|not-allowed|HTTP\s*(401|403|429)|\b(401|403|429)\b|unauthori[sz]ed|forbidden|rate.?limit|too many requests|quota exceeded|subscription required|region restricted|DRM|smart_preview)'
 }
 
+function Test-NonRecoverableRunFailure([string]$Details) {
+    if ([string]::IsNullOrWhiteSpace($Details)) { return $false }
+    # Run-level stop conditions only: do not let one unavailable playlist item
+    # prevent fallback recovery for other tracks in the same source.
+    return $Details -match '(?i)(not-allowed|HTTP\s*(401|403|429)|\b(401|403|429)\b|unauthori[sz]ed|forbidden|rate.?limit|too many requests|quota exceeded|subscription required|region restricted|DRM|smart_preview)'
+}
+
 function Invoke-DirectApiRecoveryTrack([object]$Candidate, [string]$PythonExe, [string]$StagingRoot) {
     $backendScript = Join-Path (Join-Path $scriptRoot 'tools') 'backends\yandex_music_cli.py'
     if (-not (Test-Path -LiteralPath $backendScript -PathType Leaf)) {
@@ -1151,7 +1158,7 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
     # missing track after an explicit service/account denial or rate limit.
     if ($queue.Count -eq 0 -and $Automatic -and $PrimaryAlreadyTried -and @($script:sourceInventoryRecords).Count -gt 0) {
         $primaryLogText = Get-Content -LiteralPath $PreviousLogPath -Raw -ErrorAction SilentlyContinue
-        if (-not (Test-NonRecoverableServiceFailure -Details $primaryLogText)) {
+        if (-not (Test-NonRecoverableRunFailure -Details $primaryLogText)) {
             $globalReason = 'Основной backend завершился с ошибкой до создания отчёта по отдельным файлам.'
             $inventoryQueue = New-Object 'System.Collections.Generic.List[object]'
             $inventorySeen = @{}
@@ -2007,7 +2014,7 @@ Write-Host '  5 — создать отчёт по недоступным тре
 Write-Host '  6 — проверить расшифровку сохранённого токена (без загрузки и без вывода токена)'
 Write-Host '  7 — проверить шифрование и повторную расшифровку токена (без сети и без изменения сохранённого файла)'
 Write-Host '  8 — повторить незавершённую загрузку по предыдущему логу'
-Write-Host '  9 — восстановить все неудачные треки по очереди (основной загрузчик → резервный источник)'
+Write-Host '  9 — восстановить неудачные треки (основной CLI → API-клиент → yt-dlp)'
 Write-Host ' 10 — экспортировать список треков без скачивания аудио (CSV / JSON / TXT / XML)'
 Write-Host '  0 — выход'
 $actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5','6','7','8','9','10') '1'
@@ -2449,7 +2456,7 @@ try {
         $preRows = @(Import-Csv -LiteralPath $preFailoverStatus.ReportPath -ErrorAction SilentlyContinue | Where-Object { $_.Category -eq 'Не удалось скачать' })
         $recoverableRows = @($preRows | Where-Object { -not (Test-NonRecoverableServiceFailure -Details ([string]$_.Details)) })
         $lastExitCode = if ($null -ne $lastPass) { [int]$lastPass.ExitCode } else { 0 }
-        $globalFailureIsRecoverable = ($lastExitCode -ne 0) -and -not (Test-NonRecoverableServiceFailure -Details ([string]$lastPass.Text))
+        $globalFailureIsRecoverable = ($lastExitCode -ne 0) -and -not (Test-NonRecoverableRunFailure -Details ([string]$lastPass.Text))
         if ($recoverableRows.Count -gt 0 -or $globalFailureIsRecoverable) {
             Write-Host ''
             Write-Host ("Основной backend оставил проблемные композиции. Кандидатов по отчёту: {0}." -f $recoverableRows.Count) -ForegroundColor Yellow
