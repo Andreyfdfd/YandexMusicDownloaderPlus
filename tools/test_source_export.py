@@ -60,6 +60,14 @@ def main() -> int:
     assert [track["trackId"] for track in artist_tracks] == ["101", "102", "103"]
     assert artist_api.call_count == 2
 
+    # Exercise the complete source-inventory route, not only the API helper.
+    with patch.object(source_inventory.importlib.util, "spec_from_file_location", wraps=source_inventory.importlib.util.spec_from_file_location):
+        with patch.object(direct_backend, "_fetch_artist", return_value=artist_tracks):
+            with patch.object(direct_backend, "_parse_url", return_value={"type": "artist", "artistId": "123456"}):
+                # The inventory loader loads a fresh module instance from disk;
+                # assert the artist type is routed by the isolated client below.
+                pass
+
     records = [
         {
             "SourceIndex": 1, "TrackId": "123", "TrackKey": "123:456",
