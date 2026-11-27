@@ -281,7 +281,7 @@ def is_nonrecoverable_service_failure(details):
     )
     if any(marker in text for marker in markers):
         return True
-    return bool(re.search(r"\\b(401|403|429)\\b", text))
+    return bool(re.search(r"\b(401|403|429)\b", text))
 
 
 def collect_inventory(source_url, delay_seconds=0.0):
