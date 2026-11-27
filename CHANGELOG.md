@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0-preview.3 — 2026-11-27
+
+- Added a metadata-only library export (CSV, full JSON, TXT, XML) with title, artists, album, duration, ISRC, source position and track URL/IDs.
+- Added an independent MIT-licensed Yandex Music API client as a second backend and as a fallback for source inventory/export when the primary client has incompatible URL/model handling.
+- Added per-track failover flow: primary downloader → independent API backend → optional browser-session yt-dlp backend after explicit consent.
+- Kept account/access denials, rate limiting, unavailable tracks, subscription/region requirements and DRM as terminal conditions; failover is not used to bypass them.
+- Added offline export serialization tests, service-denial classifier tests, PowerShell parser validation and Windows installer smoke checks for the new backend.
+
+
 ## 0.2.0-preview.2 — 2026-11-09
 
 - Fix the Inno Setup default Music path using the current Windows user's USERPROFILE environment variable.
