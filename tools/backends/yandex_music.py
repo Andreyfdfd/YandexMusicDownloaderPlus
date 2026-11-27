@@ -799,28 +799,6 @@ def _download_one(track: dict, out_dir: Path, token: str,
 
     progress_cb({'status': 'finished'})
     return out_path
-, p)
-    if m:
-        return {'type': 'artist', 'artistId': m.group(1)}
-    # Подкасты: шоу = альбом, эпизод = трек (у Яндекса та же модель данных)
-    m = re.search(r'/podcast/(\d+)/episode/(\d+)', p)
-    if m:
-        return {'type': 'track', 'albumId': m.group(1), 'trackId': m.group(2)}
-    m = re.search(r'/podcast/(\d+)', p)
-    if m:
-        return {'type': 'album', 'albumId': m.group(1)}
-    m = re.search(r'/users/([^/]+)/playlists/(\d+)', p)
-    if m:
-        return {'type': 'playlist', 'owner': m.group(1), 'kinds': m.group(2)}
-    # UUID-плейлисты могут быть с префиксом типа `lk.` (личные плейлисты).
-    # API /playlist/{uuid} принимает полный идентификатор с префиксом.
-    m = re.search(r'/playlists/((?:[a-z]{1,4}\.)?[a-f0-9-]{32,40})', p, re.I)
-    if m:
-        return {'type': 'playlist', 'uuid': m.group(1)}
-    raise ValueError(
-        'Не удалось распознать ссылку Я.Музыки. Поддерживаются ссылки на трек, '
-        'альбом и плейлист (включая UUID-плейлисты /playlists/{uuid}).'
-    )
 
 
 # ─────────────────────── HTTP ───────────────────────
