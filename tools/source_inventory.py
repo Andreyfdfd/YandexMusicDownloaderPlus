@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import json
 import logging
 import os
@@ -176,16 +177,128 @@ def track_record(track, index):
     }
 
 
+def _safe_path_segment(value):
+    segment = re.sub(r'[<>:"/\\\\|?*\\x00-\\x1f]', "_", str(value or "")).strip().rstrip(". ")
+    return segment[:180] or "Unknown"
+
+
+def direct_api_track_record(track, index):
+    track_id = str(track.get("trackId") or "")
+    if not track_id:
+        raise RuntimeError(f"В независимом API-ответе у позиции {index} отсутствует ID трека.")
+    title = str(track.get("title") or f"Track {track_id}")
+    artists = str(track.get("artist") or "")
+    album_title = str(track.get("album") or "")
+    album_artist = str(track.get("albumArtist") or "")
+    album_id = str(track.get("albumId") or "")
+    track_number = track.get("trackNum") or ""
+    disc_number = track.get("discNum") or ""
+    year = str(track.get("year") or "")
+    duration_ms = int(track.get("durationMs") or 0)
+    track_url = (
+        f"https://music.yandex.ru/album/{album_id}/track/{track_id}"
+        if album_id else f"https://music.yandex.ru/track/{track_id}"
+    )
+    artist_folder = _safe_path_segment(album_artist or artists)
+    album_folder = _safe_path_segment(album_title)
+    number = str(track_number).zfill(2) if track_number else ""
+    if number:
+        filename = f"{number} - {_safe_path_segment(title)}"
+    else:
+        filename = _safe_path_segment(title)
+    relative_base = Path(artist_folder, album_folder, filename)
+    return {
+        "SourceIndex": index,
+        "TrackId": track_id,
+        "TrackKey": f"{track_id}:{album_id}" if album_id else track_id,
+        "TrackTitle": title,
+        "Title": title,
+        "Version": "",
+        "TrackLabel": f"{artists} - {title}".strip(" -"),
+        "Artists": artists,
+        "AlbumTitle": album_title,
+        "AlbumArtist": album_artist,
+        "AlbumId": album_id,
+        "Year": year,
+        "ISRC": str(track.get("isrc") or ""),
+        "TrackNumber": str(track_number) if track_number else "",
+        "DiscNumber": str(disc_number) if disc_number else "",
+        "Available": "",
+        "TrackUrl": track_url,
+        "RelativeBasePath": str(relative_base).replace("\\\\", "/"),
+        "DurationMs": duration_ms,
+        "DurationSeconds": round(duration_ms / 1000.0, 3) if duration_ms else "",
+    }
+
+
+def tracks_for_source_direct_api(source_url, token):
+    """Second, independently maintained API client for metadata lookup.
+
+    This is a fallback for incompatible upstream yandex-music/ymd models and
+    URL parsing. It still uses the user's OAuth token and the same service
+    access rules; it is not an entitlement or region bypass.
+    """
+    backend_path = Path(__file__).resolve().parent / "backends" / "yandex_music.py"
+    if not backend_path.is_file():
+        raise RuntimeError("Не найден независимый API-клиент для резервного чтения метаданных.")
+    spec = importlib.util.spec_from_file_location("ymdp_direct_api_metadata", backend_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Не удалось загрузить независимый API-клиент.")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    parsed = module._parse_url(source_url)
+    source_type = parsed.get("type")
+    if source_type == "track":
+        tracks = [module._fetch_single_track(parsed["trackId"], parsed.get("albumId"), token)]
+    elif source_type == "album":
+        tracks = module._fetch_album(parsed["albumId"], token)
+    elif source_type == "playlist":
+        if parsed.get("uuid"):
+            tracks = module._fetch_playlist_uuid(parsed["uuid"], token)
+        else:
+            tracks = module._fetch_playlist_legacy(parsed["owner"], parsed["kinds"], token)
+    else:
+        raise RuntimeError("Независимый API-клиент пока не поддерживает этот тип источника.")
+    if not tracks:
+        raise RuntimeError("Независимый API-клиент не вернул композиции для этого источника.")
+    return [direct_api_track_record(track, index) for index, track in enumerate(tracks, start=1)]
+
+
 def collect_inventory(source_url, delay_seconds=0.0):
     token = os.environ.get("YMDPLUS_INVENTORY_TOKEN")
     if not token:
         raise RuntimeError("Не получен токен через временную переменную окружения.")
-    client = Client(token)
-    client.init()
-    if delay_seconds > 0:
-        time.sleep(delay_seconds)
-    tracks = tracks_for_source(client, source_url, delay_seconds)
-    return [track_record(track, index) for index, track in enumerate(tracks, start=1)]
+
+    primary_error = ""
+    try:
+        client = Client(token)
+        client.init()
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+        tracks = tracks_for_source(client, source_url, delay_seconds)
+        return [track_record(track, index) for index, track in enumerate(tracks, start=1)]
+    except Exception as exc:
+        primary_error = f"{type(exc).__name__}: {exc}"
+        print(
+            f"[inventory] Основной API-клиент не смог прочитать источник: {primary_error}. "
+            "Пробую независимый клиент.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    try:
+        records = tracks_for_source_direct_api(source_url, token)
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+        print("[inventory] Состав источника прочитан независимым API-клиентом.", file=sys.stderr, flush=True)
+        return records
+    except Exception as secondary_exc:
+        raise RuntimeError(
+            "Оба API-клиента не смогли прочитать источник. "
+            f"Основной: {primary_error}; независимый: {type(secondary_exc).__name__}: {secondary_exc}"
+        ) from secondary_exc
 
 
 def run_inventory(args):
