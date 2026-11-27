@@ -70,37 +70,55 @@ namespace DownloaderPlus.Services
                 env["YMDPLUS_GUI_BROWSER"] = settings.Browser ?? "chrome";
                 env["YMDPLUS_GUI_CANCEL_FILE"] = cancelFile;
 
-                process = new Process { StartInfo = start, EnableRaisingEvents = true };
-                process.OutputDataReceived += (s, e) =>
+                var startedProcess = new Process { StartInfo = start, EnableRaisingEvents = true };
+                string startedCancelFile = cancelFile;
+                process = startedProcess;
+                startedProcess.OutputDataReceived += (s, e) =>
                 {
                     if (e.Data != null) onOutput?.Invoke(e.Data);
                 };
-                process.ErrorDataReceived += (s, e) =>
+                startedProcess.ErrorDataReceived += (s, e) =>
                 {
                     if (e.Data != null) onOutput?.Invoke(e.Data);
                 };
-                process.Exited += (s, e) =>
+                startedProcess.Exited += (s, e) =>
                 {
                     int code = 1;
-                    try { code = process.ExitCode; } catch { }
+                    try { code = startedProcess.ExitCode; } catch { }
                     try { onExit?.Invoke(code); } finally
                     {
                         lock (sync)
                         {
-                            try { process.Dispose(); } catch { }
-                            process = null;
-                            if (!string.IsNullOrWhiteSpace(cancelFile) && File.Exists(cancelFile))
-                                try { File.Delete(cancelFile); } catch { }
-                            cancelFile = null;
+                            try { startedProcess.Dispose(); } catch { }
+                            if (ReferenceEquals(process, startedProcess))
+                                process = null;
+                            if (!string.IsNullOrWhiteSpace(startedCancelFile) && File.Exists(startedCancelFile))
+                                try { File.Delete(startedCancelFile); } catch { }
+                            if (string.Equals(cancelFile, startedCancelFile, StringComparison.OrdinalIgnoreCase))
+                                cancelFile = null;
                         }
                     }
                 };
 
-                if (!process.Start())
-                    throw new InvalidOperationException("Не удалось запустить PowerShell backend.");
+                try
+                {
+                    if (!startedProcess.Start())
+                        throw new InvalidOperationException("Не удалось запустить PowerShell backend.");
 
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
+                    startedProcess.BeginOutputReadLine();
+                    startedProcess.BeginErrorReadLine();
+                }
+                catch
+                {
+                    try { startedProcess.Dispose(); } catch { }
+                    if (ReferenceEquals(process, startedProcess))
+                        process = null;
+                    if (!string.IsNullOrWhiteSpace(startedCancelFile) && File.Exists(startedCancelFile))
+                        try { File.Delete(startedCancelFile); } catch { }
+                    if (string.Equals(cancelFile, startedCancelFile, StringComparison.OrdinalIgnoreCase))
+                        cancelFile = null;
+                    throw;
+                }
             }
         }
 
