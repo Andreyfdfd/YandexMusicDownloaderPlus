@@ -186,9 +186,13 @@ def direct_api_track_record(track, index):
     track_id = str(track.get("trackId") or "")
     if not track_id:
         raise RuntimeError(f"В независимом API-ответе у позиции {index} отсутствует ID трека.")
-    title = str(track.get("title") or f"Track {track_id}")
+    raw_title = str(track.get("title") or f"Track {track_id}")
+    version = str(track.get("version") or "")
+    title = f"{raw_title} ({version})" if version else raw_title
     artists = str(track.get("artist") or "")
-    album_title = str(track.get("album") or "")
+    raw_album_title = str(track.get("album") or "")
+    album_version = str(track.get("albumVersion") or "")
+    album_title = f"{raw_album_title} ({album_version})" if album_version else raw_album_title
     album_artist = str(track.get("albumArtist") or "")
     album_id = str(track.get("albumId") or "")
     track_number = track.get("trackNum") or ""
@@ -212,8 +216,8 @@ def direct_api_track_record(track, index):
         "TrackId": track_id,
         "TrackKey": f"{track_id}:{album_id}" if album_id else track_id,
         "TrackTitle": title,
-        "Title": title,
-        "Version": "",
+        "Title": raw_title,
+        "Version": version,
         "TrackLabel": f"{artists} - {title}".strip(" -"),
         "Artists": artists,
         "AlbumTitle": album_title,
