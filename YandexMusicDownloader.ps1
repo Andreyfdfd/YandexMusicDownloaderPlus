@@ -1190,7 +1190,7 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
     }
     $queue = @($queue | Where-Object { -not (Test-NonRecoverableServiceFailure -Details ([string]$_.Details)) })
     if ($queue.Count -eq 0) {
-        Write-Host 'Очередь содержит только недоступные, удалённые или запрещённые сервисом позиции. Другие backend’ы для обхода этих ограничений запускаться не будут.' -ForegroundColor Yellow
+        Write-Host "Очередь содержит только недоступные, удалённые или запрещённые сервисом позиции. Другие backend-модули для обхода этих ограничений запускаться не будут." -ForegroundColor Yellow
         return
     }
     $queuePath = Join-Path $LogsDir "retry-queue-$RunTimestamp.csv"
