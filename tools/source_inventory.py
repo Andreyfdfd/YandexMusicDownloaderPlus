@@ -326,16 +326,18 @@ def main():
         args.handler(args)
         return 0
     except Exception as exc:
-        if args.command in ("inventory", "export"):
+        if args.command == "inventory":
             try:
                 Path(args.output_json).write_text(
-                    json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False, indent=2),
+                    json.dumps({"success": False, "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
             except Exception:
                 pass
+        elif args.command == "export":
+            print(json.dumps({"success": False, "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False))
         else:
-            print(json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False))
+            print(json.dumps({"success": False, "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False))
         return 2
 
 
