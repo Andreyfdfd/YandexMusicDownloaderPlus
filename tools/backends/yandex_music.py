@@ -172,6 +172,7 @@ def _shape_track(t: dict, default_album: str = '') -> dict:
         'trackNum': pos.get('index') or 0,
         'trackTotal': album.get('trackCount') or 0,
         'discNum': pos.get('volume') or 0,
+        'isrc': t.get('isrc') or '',
         'coverUri': cover_uri,
     }
 
