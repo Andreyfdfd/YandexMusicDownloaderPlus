@@ -6,11 +6,13 @@ import json
 import os
 import sys
 import tempfile
+import importlib.util
 from pathlib import Path
 from unittest.mock import patch
 from xml.etree import ElementTree as ET
 
 TOOLS_DIR = Path(__file__).resolve().parent
+BACKENDS_DIR = TOOLS_DIR / 'backends'
 sys.path.insert(0, str(TOOLS_DIR))
 import source_inventory  # noqa: E402
 from source_inventory import (
@@ -26,6 +28,37 @@ def main() -> int:
     assert is_nonrecoverable_service_failure("subscription required") is True
     assert is_nonrecoverable_service_failure("HTTP 503 Service Unavailable") is False
     assert is_nonrecoverable_service_failure("playlist-not-found") is False
+
+    # Load the bundled API client under a private module name so tests do not
+    # collide with the installed upstream yandex_music package.
+    direct_path = BACKENDS_DIR / "yandex_music.py"
+    spec = importlib.util.spec_from_file_location("ymdp_artist_backend_test", direct_path)
+    assert spec is not None and spec.loader is not None
+    direct_backend = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(direct_backend)
+    assert direct_backend._parse_url("https://music.yandex.ru/artist/123456") == {
+        "type": "artist",
+        "artistId": "123456",
+    }
+    artist_pages = [
+        {
+            "tracks": [
+                {"id": 101, "title": "Первый", "artists": [{"name": "Артист"}], "albums": [{"id": 7, "title": "Альбом"}]},
+                {"id": 102, "title": "Второй", "artists": [{"name": "Артист"}], "albums": [{"id": 7, "title": "Альбом"}]},
+            ],
+            "pager": {"page": 0, "perPage": 2, "total": 3},
+        },
+        {
+            "tracks": [
+                {"id": 103, "title": "Третий", "artists": [{"name": "Артист"}], "albums": [{"id": 8, "title": "Другой альбом"}]},
+            ],
+            "pager": {"page": 1, "perPage": 2, "total": 3},
+        },
+    ]
+    with patch.object(direct_backend, "_api_get", side_effect=artist_pages) as artist_api:
+        artist_tracks = direct_backend._fetch_artist("123456", "test-token")
+    assert [track["trackId"] for track in artist_tracks] == ["101", "102", "103"]
+    assert artist_api.call_count == 2
 
     records = [
         {
