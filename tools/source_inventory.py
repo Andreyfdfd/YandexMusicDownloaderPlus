@@ -365,7 +365,7 @@ def write_export_files(source_url, output_dir, prefix, records):
         writer.writeheader()
         for row in records:
             writer.writerow({
-                "title": row.get("Title") or row.get("TrackTitle") or "",
+                "title": row.get("TrackTitle") or row.get("Title") or "",
                 "artist": row.get("Artists") or "",
                 "album": row.get("AlbumTitle") or "",
                 "isrc": row.get("ISRC") or "",
@@ -397,7 +397,7 @@ def write_export_files(source_url, output_dir, prefix, records):
     json_path.write_text(json.dumps(backup, ensure_ascii=False, indent=2), encoding="utf-8")
 
     text_lines = [
-        f"{row.get('Artists') or 'Unknown Artist'} - {row.get('Title') or row.get('TrackTitle') or 'Unknown Title'}"
+        f"{row.get('Artists') or 'Unknown Artist'} - {row.get('TrackTitle') or row.get('Title') or 'Unknown Title'}"
         for row in records
     ]
     txt_path.write_text("\n".join(text_lines) + ("\n" if text_lines else ""), encoding="utf-8-sig")
@@ -405,7 +405,7 @@ def write_export_files(source_url, output_dir, prefix, records):
     root = ET.Element("playlist", {"title": prefix})
     for row in records:
         node = ET.SubElement(root, "track")
-        ET.SubElement(node, "title").text = row.get("Title") or row.get("TrackTitle") or ""
+        ET.SubElement(node, "title").text = row.get("TrackTitle") or row.get("Title") or ""
         ET.SubElement(node, "artist").text = row.get("Artists") or ""
         ET.SubElement(node, "album").text = row.get("AlbumTitle") or ""
         if row.get("ISRC"):
