@@ -1,0 +1,93 @@
+name: Build Windows installer and publish release
+
+on:
+  push:
+    branches:
+      - release/windows-installer-preview
+      - feature/backend-failover-and-library-export
+      - feature/native-desktop-app
+      - main
+  pull_request:
+    branches:
+      - main
+      - release/windows-installer-preview
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: downloader-plus-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Set up Go launcher compiler
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+
+      - name: Set up .NET SDK for WPF desktop client
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build embedded runtime, GUI and installer
+        shell: pwsh
+        run: .\installer\build.ps1
+
+      - name: Upload build artifact for diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: YandexMusicDownloaderPlus-Windows-Installer
+          path: artifacts/output/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish stable Windows release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.3.0
+          target_commitish: ${{ github.sha }}
+          name: Yandex Music Downloader Plus 0.3.0
+          prerelease: false
+          make_latest: true
+          overwrite_files: true
+          body: |
+            Yandex Music Downloader Plus 0.3.0 — стабильный выпуск с полноценным графическим приложением Windows.
+
+            ## Главное
+            - Новое WPF-приложение на .NET Framework 4.8 с разделами «Загрузка», «Экспорт», «Восстановление», «Журналы» и «Настройки».
+            - Запуск тех же проверенных PowerShell/backend-сценариев, без переписывания самого движка загрузки.
+            - Живой вывод и прогресс, отмена операции, выбор музыкальной папки, настройка качества, текстов песен и задержки.
+            - Метаданные библиотеки экспортируются в CSV, JSON, TXT и XML без скачивания аудио.
+            - Последовательность backend: основной CLI → независимый API-клиент → опциональный yt-dlp с браузерной сессией после отдельного согласия.
+            - Поддержка ссылок на треки, альбомы, плейлисты и исполнителей в резервном API-клиенте.
+
+            ## Безопасность
+            - OAuth-токен хранится с помощью Windows DPAPI для текущего пользователя.
+            - Встроенный launcher не передаёт токен в командной строке основного процесса.
+            - Браузерные cookies используются только после явного согласия; ограничения доступа и тарифа не обходятся.
+            - Непроверенные результаты остаются в staging, существующие нормальные аудиофайлы автоматически не перезаписываются.
+
+            ## Совместимость
+            - Windows 10 22H2 / Windows 11, x64.
+            - Графический клиент построен на .NET Framework 4.8, который включён в поддерживаемые версии Windows.
+            - Портативный CPython 3.14 и backend-модули входят в установщик. Системные Python, Git и pip не нужны.
+
+            В релиз приложены SHA256SUMS.txt и установщик Windows. Установщик не подписан сертификатом издателя, поэтому SmartScreen может показать предупреждение.
+          files: |
+            artifacts/output/YandexMusicDownloaderPlus-Setup-0.3.0.exe
+            artifacts/output/SHA256SUMS.txt

@@ -26,3 +26,8 @@ __pycache__/
 *.backup
 .DS_Store
 Thumbs.db
+
+# WPF / .NET build outputs
+**/bin/
+**/obj/
+artifacts/

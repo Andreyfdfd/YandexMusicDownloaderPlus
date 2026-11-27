@@ -2,13 +2,37 @@
 $ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$defaultExe = Join-Path $env:LOCALAPPDATA 'Python\pythoncore-3.14-64\Scripts\yandex-music-downloader.exe'
-$defaultUrl = 'https://music.yandex.ru/playlists/lk.0ad9d4f5-d068-466f-9ddc-66cccbc68131'
-$defaultDir = 'D:\Music'
+$bundledDownloader = Join-Path $scriptRoot 'runtime\Scripts\yandex-music-downloader.exe'
+if (Test-Path -LiteralPath $bundledDownloader -PathType Leaf) {
+    $defaultExe = $bundledDownloader
+} else {
+    # Developer/source-checkout fallback: Find-Downloader will also inspect PATH.
+    $defaultExe = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python314\Scripts\yandex-music-downloader.exe'
+}
+# Never publish a personal playlist identifier as a default in a public release.
+$defaultUrl = ''
+# The installer stores the selected Music folder here. On a fresh Windows profile
+# this resolves to the user's Music library on the system drive (normally C:).
+$defaultDir = Join-Path $env:USERPROFILE 'Music'
+$musicPathConfig = Join-Path (Join-Path $env:APPDATA 'YandexMusicDownloaderPlus') 'music-path.txt'
+if (Test-Path -LiteralPath $musicPathConfig -PathType Leaf) {
+    try {
+        $configuredMusicPath = (Get-Content -LiteralPath $musicPathConfig -Raw -ErrorAction Stop).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($configuredMusicPath)) {
+            $defaultDir = $configuredMusicPath
+        }
+    } catch {
+        Write-Host "Не удалось прочитать настройку папки музыки; используется $defaultDir. $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
 $upstreamArchive = 'https://github.com/llistochek/yandex-music-downloader/archive/main.zip'
+$script:guiMode = $env:YMDPLUS_GUI_MODE -eq '1'
+$script:guiExitCode = 0
 
 $script:exePath = $null
 $script:helpText = ''
+$script:primaryBackendReady = $false
+$script:primaryBackendDiagnostic = ''
 $script:outputDir = $null
 $script:sourceUrl = $null
 $script:token = $null
@@ -31,6 +55,10 @@ $script:delay = '0'
 $script:lyricsChoice = '0'
 $script:resumeSettings = $null
 $script:resumeFromLog = $null
+$script:sourceInventoryRecords = @()
+$script:previousSourceInventory = @()
+$script:sourceBaselinePath = $null
+$script:hasPreviousSourceInventory = $false
 
 # Use the native Windows DPAPI directly instead of importing Microsoft.PowerShell.Security.
 # Data stays compatible with ConvertFrom-SecureString's default DPAPI hex format.
@@ -318,12 +346,17 @@ function Get-PreviousDownloadSettings([string]$LogPath) {
     }
     $url = $urlMatch.Groups[1].Value.Trim()
     $outputDir = $outputMatch.Groups[1].Value.Trim()
-    $passUrlMatches = [regex]::Matches($logText, '(?m)^URL прохода:\s*(.+?)\s*$')
-    if ($passUrlMatches.Count -gt 0) {
-        $url = $passUrlMatches[$passUrlMatches.Count - 1].Groups[1].Value.Trim()
-    } else {
-        $alternateUrlMatches = [regex]::Matches($logText, '(?m)^Альтернативный URL после playlist-not-found:\s*(.+?)\s*$')
-        if ($alternateUrlMatches.Count -gt 0) { $url = $alternateUrlMatches[$alternateUrlMatches.Count - 1].Groups[1].Value.Trim() }
+    $isRecoveryRun = $logText -match '(?m)^Режим: последовательное восстановление треков \(пункт 9\)\s*$' -or
+        $logText -match '(?m)^Очередь восстановления по логу:'
+    # In a recovery log, each URL прохода is a single track; preserve the original source URL.
+    if (-not $isRecoveryRun) {
+        $passUrlMatches = [regex]::Matches($logText, '(?m)^URL прохода:\s*(.+?)\s*$')
+        if ($passUrlMatches.Count -gt 0) {
+            $url = $passUrlMatches[$passUrlMatches.Count - 1].Groups[1].Value.Trim()
+        } else {
+            $alternateUrlMatches = [regex]::Matches($logText, '(?m)^Альтернативный URL после playlist-not-found:\s*(.+?)\s*$')
+            if ($alternateUrlMatches.Count -gt 0) { $url = $alternateUrlMatches[$alternateUrlMatches.Count - 1].Groups[1].Value.Trim() }
+        }
     }
     if ($url -notmatch '^https?://\S+') {
         Write-Host 'В логе отсутствует корректная HTTP(S)-ссылка. Повтор отменён.' -ForegroundColor Yellow
@@ -442,18 +475,996 @@ function Move-ZeroLengthAudioToQuarantine([string]$RootPath) {
     }
 }
 
+
+function Get-SourceSnapshotKey([string]$SourceUrl) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($SourceUrl)
+        $hash = $sha.ComputeHash($bytes)
+        return ([BitConverter]::ToString($hash).Replace('-', '').Substring(0, 20).ToLowerInvariant())
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Invoke-SourceInventory([string]$SourceUrl, [string]$PythonExe, [string]$DelaySeconds = '0') {
+    $helperPath = Join-Path (Join-Path $scriptRoot 'tools') 'source_inventory.py'
+    if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {
+        return [pscustomobject]@{ Success = $false; Tracks = @(); Error = "Не найден вспомогательный файл: $helperPath" }
+    }
+    if ([string]::IsNullOrWhiteSpace($PythonExe) -or -not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
+        return [pscustomobject]@{ Success = $false; Tracks = @(); Error = 'Не найден python.exe, связанный с загрузчиком.' }
+    }
+    $jsonPath = Join-Path $env:TEMP ("ymdp-source-inventory-{0}.json" -f [guid]::NewGuid().ToString('N'))
+    $env:YMDPLUS_INVENTORY_TOKEN = $script:token
+    try {
+        $null = & $PythonExe $helperPath inventory --url $SourceUrl --output-json $jsonPath --delay $DelaySeconds 2>&1
+        $exitCode = $LASTEXITCODE
+        if (-not (Test-Path -LiteralPath $jsonPath -PathType Leaf)) {
+            return [pscustomobject]@{ Success = $false; Tracks = @(); Error = "Помощник состава источника завершился с кодом $exitCode и не создал ответ." }
+        }
+        try {
+            $payload = Get-Content -LiteralPath $jsonPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            return [pscustomobject]@{ Success = $false; Tracks = @(); Error = "Не удалось разобрать ответ помощника состава источника: $($_.Exception.Message)" }
+        }
+        if (-not $payload.success) {
+            return [pscustomobject]@{ Success = $false; Tracks = @(); Error = [string]$payload.error }
+        }
+        return [pscustomobject]@{ Success = $true; Tracks = @($payload.tracks); Error = ''; Count = [int]$payload.count }
+    } catch {
+        return [pscustomobject]@{ Success = $false; Tracks = @(); Error = $_.Exception.Message }
+    } finally {
+        Remove-Item Env:\YMDPLUS_INVENTORY_TOKEN -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $jsonPath -PathType Leaf) {
+            Remove-Item -LiteralPath $jsonPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Invoke-PlaylistMetadataExport([string]$SourceUrl, [string]$PythonExe, [string]$OutputDir, [string]$Prefix, [string]$DelaySeconds = '0') {
+    $helperPath = Join-Path (Join-Path $scriptRoot 'tools') 'source_inventory.py'
+    if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {
+        return [pscustomobject]@{ Success = $false; Error = "Не найден файл экспорта: $helperPath"; Files = $null; Count = 0 }
+    }
+    if ([string]::IsNullOrWhiteSpace($PythonExe) -or -not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
+        return [pscustomobject]@{ Success = $false; Error = 'Не найден встроенный Python для экспорта библиотеки.'; Files = $null; Count = 0 }
+    }
+
+    $previousToken = $env:YMDPLUS_INVENTORY_TOKEN
+    $env:YMDPLUS_INVENTORY_TOKEN = $script:token
+    try {
+        $rawOutput = (& $PythonExe $helperPath export --url $SourceUrl --output-dir $OutputDir --prefix $Prefix --delay $DelaySeconds 2>&1 | Out-String).Trim()
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            return [pscustomobject]@{ Success = $false; Error = "Экспортёр завершился с кодом $exitCode. $rawOutput"; Files = $null; Count = 0 }
+        }
+        $jsonResultLine = @(
+            $rawOutput -split '\r?\n' |
+                Where-Object {
+                    $candidateLine = $_.Trim()
+                    $candidateLine.StartsWith('{') -and $candidateLine.EndsWith('}')
+                } |
+                Select-Object -Last 1
+        )
+        if ($jsonResultLine.Count -eq 0) {
+            return [pscustomobject]@{ Success = $false; Error = "Экспортёр не вернул JSON-результат. Вывод: $rawOutput"; Files = $null; Count = 0 }
+        }
+        try {
+            $payload = $jsonResultLine[0] | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            return [pscustomobject]@{ Success = $false; Error = "Не удалось разобрать результат экспорта: $($_.Exception.Message). Вывод: $rawOutput"; Files = $null; Count = 0 }
+        }
+        if (-not $payload.success -or [int]$payload.count -le 0) {
+            return [pscustomobject]@{ Success = $false; Error = 'Источник не вернул ни одной композиции для экспорта.'; Files = $payload.files; Count = [int]$payload.count }
+        }
+        return [pscustomobject]@{ Success = $true; Error = ''; Files = $payload.files; Count = [int]$payload.count }
+    } catch {
+        return [pscustomobject]@{ Success = $false; Error = $_.Exception.Message; Files = $null; Count = 0 }
+    } finally {
+        if ($null -eq $previousToken) {
+            Remove-Item Env:\YMDPLUS_INVENTORY_TOKEN -ErrorAction SilentlyContinue
+        } else {
+            $env:YMDPLUS_INVENTORY_TOKEN = $previousToken
+        }
+    }
+}
+
+function Get-NormalizedAudioBasePath([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    try { $fullPath = [System.IO.Path]::GetFullPath($Path) } catch { $fullPath = $Path }
+    $extension = [System.IO.Path]::GetExtension($fullPath)
+    if (@('.m4a','.mp3','.flac','.aac','.ogg','.opus','.wav','.wma','.aiff','.ape') -contains $extension.ToLowerInvariant()) {
+        $fullPath = [System.IO.Path]::ChangeExtension($fullPath, $null)
+    }
+    return $fullPath.ToLowerInvariant()
+}
+
+function Get-TrackAudioFiles([string]$RootPath, [string]$RelativeBasePath) {
+    if ([string]::IsNullOrWhiteSpace($RootPath) -or [string]::IsNullOrWhiteSpace($RelativeBasePath)) { return @() }
+    $relative = $RelativeBasePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+    $basePath = Join-Path $RootPath $relative
+    $directory = Split-Path -Parent $basePath
+    $baseName = Split-Path -Leaf $basePath
+    if ([string]::IsNullOrWhiteSpace($directory) -or -not (Test-Path -LiteralPath $directory -PathType Container)) { return @() }
+    # Only formats that this upstream downloader recognizes for --skip-existing.
+    $extensions = @('.m4a','.mp3','.flac')
+    return @(Get-ChildItem -LiteralPath $directory -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            ([System.IO.Path]::GetFileNameWithoutExtension($_.Name) -ieq $baseName) -and
+            ($extensions -contains $_.Extension.ToLowerInvariant())
+        })
+}
+
+function Test-AudioDuration([string]$PythonExe, [string]$AudioPath, [object]$ExpectedDurationMs) {
+    $helperPath = Join-Path (Join-Path $scriptRoot 'tools') 'source_inventory.py'
+    if ([string]::IsNullOrWhiteSpace($PythonExe) -or -not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {
+        return [pscustomobject]@{ Success = $false; DurationSeconds = 0.0; ValidAgainstMetadata = $false; Error = 'Не найден помощник проверки длительности.' }
+    }
+    try {
+        $output = (& $PythonExe $helperPath duration --path $AudioPath 2>&1 | Out-String).Trim()
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0 -or [string]::IsNullOrWhiteSpace($output)) {
+            return [pscustomobject]@{ Success = $false; DurationSeconds = 0.0; ValidAgainstMetadata = $false; Error = $output }
+        }
+        $payload = $output | ConvertFrom-Json -ErrorAction Stop
+        if (-not $payload.success) {
+            return [pscustomobject]@{ Success = $false; DurationSeconds = 0.0; ValidAgainstMetadata = $false; Error = [string]$payload.error }
+        }
+        $actual = [double]$payload.durationSeconds
+        $expected = 0.0
+        if ($null -ne $ExpectedDurationMs -and [double]$ExpectedDurationMs -gt 0) {
+            $expected = [double]$ExpectedDurationMs / 1000.0
+        }
+        if ($expected -le 0) {
+            return [pscustomobject]@{ Success = $true; DurationSeconds = $actual; ValidAgainstMetadata = $false; Error = 'В источнике не указана длительность для сравнения.' }
+        }
+        $tolerance = [Math]::Max(8.0, $expected * 0.15)
+        $valid = [Math]::Abs($actual - $expected) -le $tolerance
+        return [pscustomobject]@{ Success = $true; DurationSeconds = $actual; ValidAgainstMetadata = $valid; Error = '' }
+    } catch {
+        return [pscustomobject]@{ Success = $false; DurationSeconds = 0.0; ValidAgainstMetadata = $false; Error = $_.Exception.Message }
+    }
+}
+
+function Add-TrackFailureToMap([hashtable]$FailureMap, [object]$TrackRecord, [string]$Details, [string]$FallbackLabel = '') {
+    $trackId = ''
+    $trackKey = ''
+    if ($null -ne $TrackRecord -and -not [string]::IsNullOrWhiteSpace([string]$TrackRecord.TrackId)) {
+        $trackId = [string]$TrackRecord.TrackId
+        $trackKey = [string]$TrackRecord.TrackKey
+        if ([string]::IsNullOrWhiteSpace($trackKey)) { $trackKey = $trackId }
+    }
+    $key = if ($trackKey) { $trackKey } elseif ($trackId) { $trackId } else { "label:$FallbackLabel" }
+    if ([string]::IsNullOrWhiteSpace($key)) { $key = "unknown:$($FailureMap.Count)" }
+
+    if ($FailureMap.ContainsKey($key)) {
+        $existing = $FailureMap[$key]
+        if (-not [string]::IsNullOrWhiteSpace($Details) -and $existing.Details -notlike "*$Details*") {
+            $existing.Details = ($existing.Details, $Details | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join '; '
+        }
+        return
+    }
+
+    $sourceIndex = ''
+    $title = $FallbackLabel
+    $artists = ''
+    $album = ''
+    $trackUrl = ''
+    $relativePath = ''
+    $duration = 0
+    if ($null -ne $TrackRecord) {
+        $sourceIndex = $TrackRecord.SourceIndex
+        $title = $TrackRecord.TrackTitle
+        $artists = $TrackRecord.Artists
+        $album = $TrackRecord.AlbumTitle
+        $trackUrl = $TrackRecord.TrackUrl
+        $relativePath = $TrackRecord.RelativeBasePath
+        $duration = $TrackRecord.DurationMs
+    }
+    $row = [pscustomobject]@{
+        Category = 'Не удалось скачать'
+        SourceIndex = $sourceIndex
+        TrackId = $trackId
+        TrackKey = $trackKey
+        TrackTitle = $title
+        Artists = $artists
+        AlbumTitle = $album
+        TrackUrl = $trackUrl
+        RelativeBasePath = $relativePath
+        DurationMs = $duration
+        Details = $Details
+    }
+    $FailureMap[$key] = $row
+}
+
+function Write-SourceStatusReport(
+    [object[]]$CurrentInventory,
+    [object[]]$PreviousInventory,
+    [bool]$HasPreviousInventory,
+    [string]$SourceUrl,
+    [string]$OutputDir,
+    [string]$LogText,
+    [string]$LogsDir,
+    [string]$RunTimestamp,
+    [string]$BaselinePath
+) {
+    $rows = New-Object 'System.Collections.Generic.List[object]'
+    $failures = @{}
+    $currentIds = @{}
+    foreach ($track in @($CurrentInventory)) {
+        $currentKey = [string]$track.TrackKey
+        if ([string]::IsNullOrWhiteSpace($currentKey)) { $currentKey = [string]$track.TrackId }
+        if (-not [string]::IsNullOrWhiteSpace($currentKey)) { $currentIds[$currentKey] = $true }
+    }
+
+    if ($HasPreviousInventory) {
+        foreach ($oldTrack in @($PreviousInventory)) {
+            $oldId = [string]$oldTrack.TrackId
+            $oldKey = [string]$oldTrack.TrackKey
+            if ([string]::IsNullOrWhiteSpace($oldKey)) { $oldKey = $oldId }
+            if (-not [string]::IsNullOrWhiteSpace($oldKey) -and -not $currentIds.ContainsKey($oldKey)) {
+                [void]$rows.Add([pscustomobject]@{
+                    Category = 'Удалено из источника'
+                    SourceIndex = $oldTrack.SourceIndex
+                    TrackId = $oldId
+                    TrackKey = $oldKey
+                    TrackTitle = $oldTrack.TrackTitle
+                    Artists = $oldTrack.Artists
+                    AlbumTitle = $oldTrack.AlbumTitle
+                    TrackUrl = $oldTrack.TrackUrl
+                    RelativeBasePath = $oldTrack.RelativeBasePath
+                    DurationMs = $oldTrack.DurationMs
+                    Details = 'Трек был в предыдущем снимке источника, но отсутствует в текущем. Локальный файл не удалялся.'
+                })
+            }
+        }
+    } else {
+        [void]$rows.Add([pscustomobject]@{
+            Category = 'Начальный снимок источника'
+            SourceIndex = ''; TrackId = ''; TrackKey = ''; TrackTitle = ''; Artists = ''; AlbumTitle = ''
+            TrackUrl = ''; RelativeBasePath = ''; DurationMs = ''
+            Details = 'Предыдущего снимка нет. Этот запуск создаёт базу для сравнения удалённых из источника треков в следующих запусках.'
+        })
+    }
+
+    foreach ($entry in @(Get-UnavailableTrackEntries -Text $LogText)) {
+        $match = $null
+        if ($CurrentInventory.Count -eq [int]$entry.PlaylistTotal) {
+            $match = @($CurrentInventory | Where-Object { [int]$_.SourceIndex -eq [int]$entry.TrackIndex } | Select-Object -First 1)[0]
+        }
+        if ($null -eq $match) {
+            $match = @($CurrentInventory | Where-Object { $_.TrackLabel -and $_.TrackLabel.Trim() -ieq $entry.Track.Trim() } | Select-Object -First 1)[0]
+        }
+        Add-TrackFailureToMap -FailureMap $failures -TrackRecord $match -Details ("Основной загрузчик сообщил: {0}" -f $entry.Message) -FallbackLabel $entry.Track
+    }
+
+    $outcomeFiles = @(Get-ChildItem -LiteralPath $LogsDir -Filter "file-outcomes-$RunTimestamp-*.csv" -File -ErrorAction SilentlyContinue)
+    foreach ($outcomeFile in $outcomeFiles) {
+        foreach ($outcome in @(Import-Csv -LiteralPath $outcomeFile.FullName -ErrorAction SilentlyContinue)) {
+            if ($outcome.Status -notin @('Не найден после прохода','Нулевой размер','Изменение не обнаружено')) { continue }
+            $pathKey = Get-NormalizedAudioBasePath -Path ([string]$outcome.Path)
+            $match = $null
+            foreach ($track in @($CurrentInventory)) {
+                $expectedBase = Join-Path $OutputDir ([string]$track.RelativeBasePath -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+                if ((Get-NormalizedAudioBasePath -Path $expectedBase) -eq $pathKey) { $match = $track; break }
+            }
+            $detail = "Отчёт $($outcomeFile.Name): $($outcome.Status) — $($outcome.Path)"
+            Add-TrackFailureToMap -FailureMap $failures -TrackRecord $match -Details $detail -FallbackLabel ([System.IO.Path]::GetFileNameWithoutExtension([string]$outcome.Path))
+        }
+    }
+
+    # Remove only failures that a later backend positively recovered and
+    # validated. A nonzero file by itself is not enough to clear a failure.
+    $recoveredKeys = @{}
+    $recoveryResultsPath = Join-Path $LogsDir "recovery-results-$RunTimestamp.csv"
+    if (Test-Path -LiteralPath $recoveryResultsPath -PathType Leaf) {
+        foreach ($recovered in @(Import-Csv -LiteralPath $recoveryResultsPath -ErrorAction SilentlyContinue)) {
+            if ($recovered.Status -ne 'Успешно восстановлен') { continue }
+            $recoveredKey = [string]$recovered.TrackKey
+            if ([string]::IsNullOrWhiteSpace($recoveredKey)) { $recoveredKey = [string]$recovered.TrackId }
+            if (-not [string]::IsNullOrWhiteSpace($recoveredKey)) { $recoveredKeys[$recoveredKey] = $true }
+        }
+    }
+    foreach ($failure in $failures.Values) {
+        $failureKey = [string]$failure.TrackKey
+        if ([string]::IsNullOrWhiteSpace($failureKey)) { $failureKey = [string]$failure.TrackId }
+        if ($recoveredKeys.ContainsKey($failureKey)) { continue }
+        [void]$rows.Add($failure)
+    }
+    foreach ($errorLine in @(Get-ErrorLines -Text $LogText)) {
+        [void]$rows.Add([pscustomobject]@{
+            Category = 'Общая ошибка загрузки'
+            SourceIndex = ''; TrackId = ''; TrackKey = ''; TrackTitle = ''; Artists = ''; AlbumTitle = ''
+            TrackUrl = ''; RelativeBasePath = ''; DurationMs = ''
+            Details = [string]$errorLine
+        })
+    }
+    if ($rows.Count -eq 0) {
+        [void]$rows.Add([pscustomobject]@{
+            Category = 'Проблем не обнаружено'
+            SourceIndex = ''; TrackId = ''; TrackKey = ''; TrackTitle = ''; Artists = ''; AlbumTitle = ''
+            TrackUrl = ''; RelativeBasePath = ''; DurationMs = ''
+            Details = 'В ходе этого запуска не обнаружено удалённых из источника или однозначно неудачных треков.'
+        })
+    }
+
+    $reportPath = Join-Path $LogsDir "library-status-$RunTimestamp.csv"
+    $rows.ToArray() | Export-Csv -LiteralPath $reportPath -NoTypeInformation -Encoding UTF8
+    if (@($CurrentInventory).Count -gt 0) {
+        @($CurrentInventory) | Export-Csv -LiteralPath $BaselinePath -NoTypeInformation -Encoding UTF8
+    }
+
+    $removedCount = @($rows.ToArray() | Where-Object { $_.Category -eq 'Удалено из источника' }).Count
+    $failedCount = @($rows.ToArray() | Where-Object { $_.Category -eq 'Не удалось скачать' }).Count
+    Write-Host ''
+    Write-Host 'Сводный отчёт по составу источника и неудачным загрузкам:' -ForegroundColor Cyan
+    if (-not $HasPreviousInventory) {
+        Write-Host '  Предыдущего снимка не было — база для поиска удалённых треков создана.' -ForegroundColor Gray
+    } else {
+        Write-Host "  Треков, удалённых из источника с предыдущей проверки: $removedCount" -ForegroundColor Yellow
+    }
+    Write-Host "  Треков с обнаруженной неудачной загрузкой: $failedCount" -ForegroundColor Yellow
+    Write-Host "  Полный список: $reportPath" -ForegroundColor Green
+    return [pscustomobject]@{ ReportPath = $reportPath; RemovedCount = $removedCount; FailedCount = $failedCount }
+}
+
+function Add-RetryCandidate([System.Collections.Generic.List[object]]$Queue, [hashtable]$Seen, [object]$TrackRecord, [string]$Details, [string]$FallbackLabel = '') {
+    $trackId = ''
+    $trackKey = ''
+    if ($null -ne $TrackRecord) {
+        $trackId = [string]$TrackRecord.TrackId
+        $trackKey = [string]$TrackRecord.TrackKey
+        if ([string]::IsNullOrWhiteSpace($trackKey)) { $trackKey = $trackId }
+    }
+    $key = if ($trackKey) { $trackKey } elseif ($trackId) { $trackId } else { "label:$FallbackLabel" }
+    if ([string]::IsNullOrWhiteSpace($key)) { return }
+    if ($Seen.ContainsKey($key)) {
+        $existing = $Seen[$key]
+        if (-not [string]::IsNullOrWhiteSpace($Details) -and $existing.Details -notlike "*$Details*") {
+            $existing.Details = ($existing.Details, $Details | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join '; '
+        }
+        return
+    }
+    if ($null -eq $TrackRecord -or [string]::IsNullOrWhiteSpace([string]$TrackRecord.TrackUrl)) { return }
+    $candidate = [pscustomobject]@{
+        SourceIndex = $TrackRecord.SourceIndex
+        TrackId = $trackId
+        TrackKey = $trackKey
+        TrackTitle = $TrackRecord.TrackTitle
+        TrackLabel = $TrackRecord.TrackLabel
+        Artists = $TrackRecord.Artists
+        AlbumTitle = $TrackRecord.AlbumTitle
+        TrackUrl = $TrackRecord.TrackUrl
+        RelativeBasePath = $TrackRecord.RelativeBasePath
+        DurationMs = $TrackRecord.DurationMs
+        Details = $Details
+    }
+    [void]$Queue.Add($candidate)
+    $Seen[$key] = $candidate
+}
+
+function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [string]$PythonExe, [string]$LogsDir, [string]$DelaySeconds = '0') {
+    $match = [regex]::Match([System.IO.Path]::GetFileName($PreviousLogPath), '^download-(?<Stamp>\d{8}-\d{6})\.log$')
+    if (-not $match.Success) { return [pscustomobject]@{ Queue = @(); Error = 'Имя выбранного лога не содержит ожидаемую временную метку.' } }
+    $oldStamp = $match.Groups['Stamp'].Value
+    $inventoryPath = Join-Path $LogsDir "source-inventory-$oldStamp.csv"
+    $reportPath = Join-Path $LogsDir "library-status-$oldStamp.csv"
+    $queue = New-Object 'System.Collections.Generic.List[object]'
+    $seen = @{}
+    $inventory = @()
+    $hasOriginalInventory = $false
+
+    # Reusing a prior option-9 log should queue only unresolved candidates, not repeat successes.
+    $priorQueuePath = Join-Path $LogsDir "retry-queue-$oldStamp.csv"
+    $priorResultsPath = Join-Path $LogsDir "recovery-results-$oldStamp.csv"
+    if (Test-Path -LiteralPath $priorQueuePath -PathType Leaf) {
+        $priorQueue = @(Import-Csv -LiteralPath $priorQueuePath -ErrorAction SilentlyContinue)
+        $priorResults = @{}
+        if (Test-Path -LiteralPath $priorResultsPath -PathType Leaf) {
+            foreach ($resultRow in @(Import-Csv -LiteralPath $priorResultsPath -ErrorAction SilentlyContinue)) {
+                $resultKey = [string]$resultRow.TrackKey
+                if ([string]::IsNullOrWhiteSpace($resultKey)) { $resultKey = [string]$resultRow.TrackId }
+                if (-not [string]::IsNullOrWhiteSpace($resultKey)) { $priorResults[$resultKey] = $resultRow }
+            }
+        }
+        foreach ($candidate in $priorQueue) {
+            $candidateKey = [string]$candidate.TrackKey
+            if ([string]::IsNullOrWhiteSpace($candidateKey)) { $candidateKey = [string]$candidate.TrackId }
+            $previousResult = if ($priorResults.ContainsKey($candidateKey)) { $priorResults[$candidateKey] } else { $null }
+            if ($null -ne $previousResult -and $previousResult.Status -eq 'Успешно восстановлен') {
+                $present = @(Get-TrackAudioFiles -RootPath $OutputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
+                if ($present.Count -gt 0) { continue }
+                $detail = 'Файл ранее восстановлен, но теперь отсутствует; повторная попытка добавлена в очередь.'
+            } elseif ($null -ne $previousResult) {
+                $detail = 'Результат прошлой попытки: {0}. {1}' -f $previousResult.Status, $previousResult.Details
+            } else {
+                $detail = 'Предыдущая попытка была прервана до записи результата.'
+            }
+            Add-RetryCandidate -Queue $queue -Seen $seen -TrackRecord $candidate -Details $detail -FallbackLabel ([string]$candidate.TrackTitle)
+        }
+        return [pscustomobject]@{ Queue = @($queue.ToArray()); Error = ''; InventoryPath = $inventoryPath; ReportPath = $reportPath; Timestamp = $oldStamp; ReusedRecoveryQueue = $true }
+    }
+
+    if (Test-Path -LiteralPath $inventoryPath -PathType Leaf) {
+        $inventory = @(Import-Csv -LiteralPath $inventoryPath)
+        $hasOriginalInventory = $inventory.Count -gt 0
+    } else {
+        Write-Host 'У выбранного запуска нет сохранённого снимка треков. Пытаюсь прочитать состав источника сейчас; привязка старых позиций может оказаться невозможной.' -ForegroundColor Yellow
+        $snapshot = Invoke-SourceInventory -SourceUrl $script:resumeSettings.Url -PythonExe $PythonExe -DelaySeconds $DelaySeconds
+        if ($snapshot.Success) { $inventory = @($snapshot.Tracks) }
+        else { Write-Host "Не удалось получить состав источника: $($snapshot.Error)" -ForegroundColor Yellow }
+    }
+
+    if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
+        foreach ($row in @(Import-Csv -LiteralPath $reportPath | Where-Object { $_.Category -eq 'Не удалось скачать' })) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$row.TrackUrl)) {
+                Add-RetryCandidate -Queue $queue -Seen $seen -TrackRecord $row -Details ([string]$row.Details) -FallbackLabel ([string]$row.TrackTitle)
+            }
+        }
+    }
+
+    $oldLogText = Get-Content -LiteralPath $PreviousLogPath -Raw -ErrorAction SilentlyContinue
+    foreach ($entry in @(Get-UnavailableTrackEntries -Text $oldLogText)) {
+        $track = $null
+        if ($hasOriginalInventory -and $inventory.Count -eq [int]$entry.PlaylistTotal) {
+            $track = @($inventory | Where-Object { [int]$_.SourceIndex -eq [int]$entry.TrackIndex } | Select-Object -First 1)[0]
+        }
+        if ($null -eq $track) {
+            $track = @($inventory | Where-Object { $_.TrackLabel -and $_.TrackLabel.Trim() -ieq $entry.Track.Trim() } | Select-Object -First 1)[0]
+        }
+        Add-RetryCandidate -Queue $queue -Seen $seen -TrackRecord $track -Details ([string]$entry.Message) -FallbackLabel ([string]$entry.Track)
+    }
+
+    foreach ($outcomeFile in @(Get-ChildItem -LiteralPath $LogsDir -Filter "file-outcomes-$oldStamp-*.csv" -File -ErrorAction SilentlyContinue)) {
+        foreach ($outcome in @(Import-Csv -LiteralPath $outcomeFile.FullName -ErrorAction SilentlyContinue)) {
+            if ($outcome.Status -notin @('Не найден после прохода','Нулевой размер','Изменение не обнаружено')) { continue }
+            $pathKey = Get-NormalizedAudioBasePath -Path ([string]$outcome.Path)
+            $track = $null
+            foreach ($item in $inventory) {
+                $expectedBase = Join-Path $OutputDir ([string]$item.RelativeBasePath -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+                if ((Get-NormalizedAudioBasePath -Path $expectedBase) -eq $pathKey) { $track = $item; break }
+            }
+            Add-RetryCandidate -Queue $queue -Seen $seen -TrackRecord $track -Details ("$($outcome.Status): $($outcome.Path)") -FallbackLabel ([System.IO.Path]::GetFileNameWithoutExtension([string]$outcome.Path))
+        }
+    }
+    return [pscustomobject]@{ Queue = @($queue.ToArray()); Error = ''; InventoryPath = $inventoryPath; ReportPath = $reportPath; Timestamp = $oldStamp }
+}
+
+function Move-CandidateFilesToQuarantine([object[]]$Queue, [string]$RootPath, [bool]$OnlyZeroLength = $false) {
+    $filesToMove = New-Object 'System.Collections.Generic.List[object]'
+    $seenPaths = @{}
+    foreach ($candidate in @($Queue)) {
+        foreach ($file in @(Get-TrackAudioFiles -RootPath $RootPath -RelativeBasePath ([string]$candidate.RelativeBasePath))) {
+            if ($OnlyZeroLength -and $file.Length -ne 0) { continue }
+            if ($seenPaths.ContainsKey($file.FullName)) { continue }
+            $seenPaths[$file.FullName] = $true
+            [void]$filesToMove.Add($file)
+        }
+    }
+    if ($filesToMove.Count -eq 0) { return [pscustomobject]@{ Moved = 0; Path = '' } }
+
+    $fullRoot = [System.IO.Path]::GetFullPath($RootPath)
+    $trimmedRoot = $fullRoot.TrimEnd([char[]]@('\','/'))
+    if ($trimmedRoot -match '^[A-Za-z]:$') { $parent = "$trimmedRoot\"; $leaf = 'drive-root' }
+    else { $parent = Split-Path -Parent $trimmedRoot; $leaf = Split-Path -Leaf $trimmedRoot }
+    $qName = '{0}._DownloaderPlus_Quarantine_{1}' -f $leaf, (Get-Date -Format 'yyyyMMdd-HHmmss')
+    $qPath = Join-Path $parent $qName
+    if (Test-Path -LiteralPath $qPath) { $qPath = Join-Path $parent ("{0}._DownloaderPlus_Quarantine_{1}_{2}" -f $leaf, (Get-Date -Format 'yyyyMMdd-HHmmss'), ([guid]::NewGuid().ToString('N').Substring(0,8))) }
+
+    $moved = 0
+    foreach ($file in $filesToMove) {
+        $relative = $file.FullName.Substring($trimmedRoot.Length).TrimStart([char[]]@('\','/'))
+        $target = Join-Path $qPath $relative
+        try {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force -ErrorAction Stop | Out-Null
+            Move-Item -LiteralPath $file.FullName -Destination $target -ErrorAction Stop
+            $moved++
+        } catch {
+            Write-Host "Не удалось переместить в карантин $($file.FullName): $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+    return [pscustomobject]@{ Moved = $moved; Path = $qPath }
+}
+
+function Ensure-YtDlpBackend([string]$PythonExe) {
+    # The installer may already include yt-dlp and its Yandex Music plugin in the
+    # optional component. Avoid a needless network install on every fallback run.
+    $previousPreference = $ErrorActionPreference
+    $probeExit = 1
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $PythonExe -c "import importlib.metadata as m; m.version('yt-dlp'); m.version('yt-dlp-yandex-music')" 2>&1 | Out-Null
+        $probeExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    if ($probeExit -eq 0) {
+        Write-Host 'Резервный backend уже установлен.' -ForegroundColor Green
+        return $true
+    }
+
+    Write-Host 'Устанавливаю недостающие компоненты yt-dlp...' -ForegroundColor Gray
+    $installExit = 1
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $PythonExe -m pip install --upgrade 'yt-dlp[default]' 'yt-dlp-yandex-music'
+        $installExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    return ($installExit -eq 0)
+}
+
+function Initialize-YtDlpRecovery([string]$PythonExe) {
+    Write-Host ''
+    Write-Host 'Основной загрузчик не смог получить трек. Можно попробовать резервный источник через yt-dlp и авторизованную браузерную сессию.' -ForegroundColor Yellow
+    if ($script:guiMode) {
+        $enabled = if ($env:YMDPLUS_GUI_ALLOW_YTDLP -eq '1') { '1' } else { '0' }
+        $browser = [string]$env:YMDPLUS_GUI_BROWSER
+        if (@('chrome','edge','firefox','brave') -notcontains $browser) {
+            Write-Host 'Браузерный резервный способ не разрешён или не выбран в настройках приложения.' -ForegroundColor Gray
+            return [pscustomobject]@{ Enabled = $false; Browser = ''; PythonExe = $PythonExe }
+        }
+        if ($enabled -ne '1') { return [pscustomobject]@{ Enabled = $false; Browser = $browser; PythonExe = $PythonExe } }
+    } else {
+        $enabled = Read-MenuChoice 'Использовать резервный источник для оставшихся неудачных треков? (0 — нет, 1 — да)' @('0','1') '1'
+        if ($enabled -ne '1') { return [pscustomobject]@{ Enabled = $false; Browser = ''; PythonExe = $PythonExe } }
+        Write-Host 'Выбери браузер, в котором Яндекс Музыка открывается с действующей авторизацией:'
+        Write-Host '  1 — Chrome'; Write-Host '  2 — Edge'; Write-Host '  3 — Firefox'; Write-Host '  4 — Brave'
+        $browserChoice = Read-MenuChoice 'Браузер' @('1','2','3','4') '1'
+        $browser = switch ($browserChoice) { '1' { 'chrome' } '2' { 'edge' } '3' { 'firefox' } '4' { 'brave' } }
+    }
+    Write-Host 'Проверяю наличие yt-dlp и плагина...' -ForegroundColor Gray
+    if (-not (Ensure-YtDlpBackend -PythonExe $PythonExe)) {
+        Write-Host 'Установка резервного источника не удалась; продолжу очередь только основным загрузчиком.' -ForegroundColor Yellow
+        return [pscustomobject]@{ Enabled = $false; Browser = $browser; PythonExe = $PythonExe }
+    }
+    return [pscustomobject]@{ Enabled = $true; Browser = $browser; PythonExe = $PythonExe }
+}
+
+function Invoke-YtDlpRecoveryTrack([object]$Candidate, [string]$PythonExe, [string]$Browser, [string]$StagingRoot) {
+    $stageKey = [string]$Candidate.TrackKey
+    if ([string]::IsNullOrWhiteSpace($stageKey)) { $stageKey = [string]$Candidate.TrackId }
+    $stageKey = $stageKey -replace '[^A-Za-z0-9_-]', '_'
+    $trackStage = Join-Path $StagingRoot $stageKey
+    New-Item -ItemType Directory -Path $trackStage -Force | Out-Null
+    $outputPattern = Join-Path $trackStage 'track.%(ext)s'
+    $args = @('-m','yt_dlp','--cookies-from-browser',$Browser,'--no-playlist','--no-overwrites','--embed-metadata','--embed-thumbnail','--output',$outputPattern,[string]$Candidate.TrackUrl)
+    Write-Host "  Резервный источник: $($Candidate.TrackTitle)" -ForegroundColor DarkCyan
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $PythonExe @args 2>&1 | ForEach-Object {
+            $line = [string]$_
+            Write-Host $line
+            if (-not [string]::IsNullOrWhiteSpace($script:logPath)) { Add-Content -LiteralPath $script:logPath -Value $line -Encoding UTF8 }
+        }
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    $files = @(Get-ChildItem -LiteralPath $trackStage -File -ErrorAction SilentlyContinue |
+        Where-Object { @('.m4a','.mp3','.flac') -contains $_.Extension.ToLowerInvariant() })
+    if ($files.Count -eq 0) {
+        return [pscustomobject]@{ Success = $false; Path = ''; Details = "Резервный источник завершился с кодом $exitCode и не создал поддерживаемый аудиофайл. Staging: $trackStage" }
+    }
+    if ($exitCode -ne 0) {
+        Write-Host "yt-dlp завершился с кодом $exitCode, но оставил аудиофайл. Перед импортом проверю его читаемость и длительность." -ForegroundColor Yellow
+    }
+    $candidateFile = $files | Sort-Object Length -Descending | Select-Object -First 1
+    if (@('.m4a','.mp3','.flac') -notcontains $candidateFile.Extension.ToLowerInvariant()) {
+        return [pscustomobject]@{ Success = $false; Path = $candidateFile.FullName; Details = "Формат $($candidateFile.Extension) основной загрузчик не распознаёт для --skip-existing; файл оставлен в staging для ручной проверки." }
+    }
+    $duration = Test-AudioDuration -PythonExe $PythonExe -AudioPath $candidateFile.FullName -ExpectedDurationMs $Candidate.DurationMs
+    if (-not $duration.Success -or -not $duration.ValidAgainstMetadata) {
+        $reason = if (-not $duration.Success) { $duration.Error } else { "Длительность {0:N1} с не согласуется с ожидаемыми {1:N1} с." -f $duration.DurationSeconds, ([double]$Candidate.DurationMs / 1000.0) }
+        return [pscustomobject]@{ Success = $false; Path = $candidateFile.FullName; Details = "Файл оставлен в staging для ручной проверки: $reason" }
+    }
+
+    $relative = ([string]$Candidate.RelativeBasePath).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+    $targetBase = Join-Path $script:outputDir $relative
+    $targetPath = $targetBase + $candidateFile.Extension
+    New-Item -ItemType Directory -Path (Split-Path -Parent $targetPath) -Force | Out-Null
+    if (Test-Path -LiteralPath $targetPath) {
+        return [pscustomobject]@{ Success = $false; Path = $candidateFile.FullName; Details = "Целевой файл уже существует; результат оставлен в staging: $targetPath" }
+    }
+    Move-Item -LiteralPath $candidateFile.FullName -Destination $targetPath -ErrorAction Stop
+    return [pscustomobject]@{ Success = $true; Path = $targetPath; Details = ("Резервный файл проверен по длительности ({0:N1} с из ожидаемых {1:N1} с)." -f $duration.DurationSeconds, ([double]$Candidate.DurationMs / 1000.0)) }
+}
+
+function Test-NonRecoverableServiceFailure([string]$Details) {
+    if ([string]::IsNullOrWhiteSpace($Details)) { return $false }
+    # Do not rotate downloaders to override service-side or account-side denials.
+    return $Details -match '(?i)(не доступен для скачивания|недоступен для скачивания|not-allowed|HTTP\s*(401|403|429)|\b(401|403|429)\b|unauthori[sz]ed|forbidden|rate.?limit|too many requests|quota exceeded|subscription required|region restricted|DRM|smart_preview)'
+}
+
+function Test-NonRecoverableRunFailure([string]$Details) {
+    if ([string]::IsNullOrWhiteSpace($Details)) { return $false }
+    # Run-level stop conditions only: do not let one unavailable playlist item
+    # prevent fallback recovery for other tracks in the same source.
+    return $Details -match '(?i)(not-allowed|HTTP\s*(401|403|429)|\b(401|403|429)\b|unauthori[sz]ed|forbidden|rate.?limit|too many requests|quota exceeded|subscription required|region restricted|DRM|smart_preview)'
+}
+
+function Invoke-DirectApiRecoveryTrack([object]$Candidate, [string]$PythonExe, [string]$StagingRoot) {
+    $backendScript = Join-Path (Join-Path $scriptRoot 'tools') 'backends\yandex_music_cli.py'
+    if (-not (Test-Path -LiteralPath $backendScript -PathType Leaf)) {
+        return [pscustomobject]@{ Success = $false; Path = ''; Details = "Файл второго backend не найден: $backendScript" }
+    }
+    if ([string]::IsNullOrWhiteSpace($PythonExe) -or -not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
+        return [pscustomobject]@{ Success = $false; Path = ''; Details = 'Не найден встроенный Python для второго backend.' }
+    }
+
+    $stageKey = [string]$Candidate.TrackKey
+    if ([string]::IsNullOrWhiteSpace($stageKey)) { $stageKey = [string]$Candidate.TrackId }
+    $stageKey = $stageKey -replace '[^A-Za-z0-9_-]', '_'
+    $trackStage = Join-Path $StagingRoot ("direct-api-" + $stageKey)
+    New-Item -ItemType Directory -Path $trackStage -Force | Out-Null
+    $backendQuality = if ($script:quality -eq '2') { 'flac' } else { 'auto' }
+
+    $previousToken = $env:YMDPLUS_BACKEND_TOKEN
+    $env:YMDPLUS_BACKEND_TOKEN = $script:token
+    $cancelFile = [string]$env:YMDPLUS_GUI_CANCEL_FILE
+    $jsonLines = New-Object 'System.Collections.Generic.List[string]'
+    $outputLines = New-Object 'System.Collections.Generic.List[string]'
+    $previousPreference = $ErrorActionPreference
+    $exitCode = 1
+    try {
+        $ErrorActionPreference = 'Continue'
+        $backendArgs = @($backendScript, '--url', [string]$Candidate.TrackUrl, '--output-dir', $trackStage, '--quality', $backendQuality)
+        if (-not [string]::IsNullOrWhiteSpace($cancelFile)) { $backendArgs += @('--cancel-file', $cancelFile) }
+        & $PythonExe @backendArgs 2>&1 | ForEach-Object {
+            $line = [string]$_
+            [void]$outputLines.Add($line)
+            if ($line.TrimStart().StartsWith('{') -and $line -match '"success"') {
+                [void]$jsonLines.Add($line.Trim())
+            } else {
+                Write-Host $line -ForegroundColor DarkGray
+            }
+            if (-not [string]::IsNullOrWhiteSpace($script:logPath)) {
+                Add-Content -LiteralPath $script:logPath -Value ("[Direct API] " + $line) -Encoding UTF8
+            }
+        }
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+        if ($null -eq $previousToken) {
+            Remove-Item Env:\YMDPLUS_BACKEND_TOKEN -ErrorAction SilentlyContinue
+        } else {
+            $env:YMDPLUS_BACKEND_TOKEN = $previousToken
+        }
+    }
+
+    if ($jsonLines.Count -eq 0) {
+        return [pscustomobject]@{ Success = $false; Path = ''; Details = "Второй backend завершился с кодом $exitCode без структурированного результата. $($outputLines -join ' ')" }
+    }
+    try {
+        $payload = $jsonLines[$jsonLines.Count - 1] | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return [pscustomobject]@{ Success = $false; Path = ''; Details = "Не удалось разобрать результат второго backend: $($_.Exception.Message)" }
+    }
+    if (-not $payload.success) {
+        return [pscustomobject]@{ Success = $false; Path = ''; Details = [string]$payload.error }
+    }
+
+    $candidatePath = [string]$payload.path
+    if ([string]::IsNullOrWhiteSpace($candidatePath) -or -not (Test-Path -LiteralPath $candidatePath -PathType Leaf)) {
+        return [pscustomobject]@{ Success = $false; Path = $candidatePath; Details = 'Второй backend сообщил об успехе, но аудиофайл в staging не найден.' }
+    }
+    $candidateFile = Get-Item -LiteralPath $candidatePath -ErrorAction Stop
+    if (@('.m4a','.mp3','.flac') -notcontains $candidateFile.Extension.ToLowerInvariant()) {
+        return [pscustomobject]@{ Success = $false; Path = $candidateFile.FullName; Details = "Формат $($candidateFile.Extension) не поддерживается библиотекой; файл оставлен в staging." }
+    }
+
+    $duration = Test-AudioDuration -PythonExe $PythonExe -AudioPath $candidateFile.FullName -ExpectedDurationMs $Candidate.DurationMs
+    if (-not $duration.Success -or -not $duration.ValidAgainstMetadata) {
+        $reason = if (-not $duration.Success) { $duration.Error } else { "Длительность {0:N1} с не согласуется с ожидаемыми {1:N1} с." -f $duration.DurationSeconds, ([double]$Candidate.DurationMs / 1000.0) }
+        return [pscustomobject]@{ Success = $false; Path = $candidateFile.FullName; Details = "Файл оставлен в staging: $reason" }
+    }
+
+    $relative = ([string]$Candidate.RelativeBasePath).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+    $targetBase = Join-Path $script:outputDir $relative
+    $targetPath = $targetBase + $candidateFile.Extension
+    New-Item -ItemType Directory -Path (Split-Path -Parent $targetPath) -Force | Out-Null
+    if (Test-Path -LiteralPath $targetPath) {
+        return [pscustomobject]@{ Success = $false; Path = $candidateFile.FullName; Details = "Целевой файл уже существует; результат оставлен в staging: $targetPath" }
+    }
+    Move-Item -LiteralPath $candidateFile.FullName -Destination $targetPath -ErrorAction Stop
+    return [pscustomobject]@{
+        Success = $true
+        Path = $targetPath
+        Details = ("Второй backend прошёл проверку длительности: {0:N1} с из ожидаемых {1:N1} с. Формат: {2}." -f $duration.DurationSeconds, ([double]$Candidate.DurationMs / 1000.0), $candidateFile.Extension.ToUpperInvariant())
+    }
+}
+
+function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, [string]$LogsDir, [string]$RunTimestamp, [switch]$Automatic, [switch]$PrimaryAlreadyTried) {
+    $queueResult = Get-RetryQueueFromLog -PreviousLogPath $PreviousLogPath -OutputDir $script:outputDir -PythonExe $PythonExe -LogsDir $LogsDir -DelaySeconds $script:delay
+    $queue = @($queueResult.Queue)
+
+    # If the primary CLI failed before emitting per-track paths, use the already
+    # collected source inventory to identify only absent files. Never infer a
+    # missing track after an explicit service/account denial or rate limit.
+    $sourceInventoryCount = 0
+    if ($null -ne $script:sourceInventoryRecords) {
+        $sourceInventoryCount = @($script:sourceInventoryRecords).Count
+    }
+    if ($queue.Count -eq 0 -and $Automatic -and $PrimaryAlreadyTried -and $sourceInventoryCount -gt 0) {
+        $primaryLogText = Get-Content -LiteralPath $PreviousLogPath -Raw -ErrorAction SilentlyContinue
+        if (-not (Test-NonRecoverableRunFailure -Details $primaryLogText)) {
+            $globalReason = 'Основной backend завершился с ошибкой до создания отчёта по отдельным файлам.'
+            $inventoryQueue = New-Object 'System.Collections.Generic.List[object]'
+            $inventorySeen = @{}
+            foreach ($record in $script:sourceInventoryRecords) {
+                $present = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$record.RelativeBasePath))
+                $nonzeroPresent = @($present | Where-Object { $_.Length -gt 0 })
+                if ($nonzeroPresent.Count -gt 0) { continue }
+                Add-RetryCandidate -Queue $inventoryQueue -Seen $inventorySeen -TrackRecord $record -Details $globalReason
+            }
+            $queue = @($inventoryQueue.ToArray())
+        }
+    }
+
+    if ($queue.Count -eq 0) {
+        if ($queueResult.ReusedRecoveryQueue) {
+            Write-Host 'В предыдущей очереди не осталось треков для повторного восстановления.' -ForegroundColor Green
+        } elseif ([string]$script:resumeSettings.Url -match '/track/\d+') {
+            Write-Host 'Выбран лог одиночного трека, который в этом запуске скачался успешно. В нём нет списка неудачных композиций, поэтому очередь пуста.' -ForegroundColor Yellow
+            Write-Host 'Чтобы проверить нужную функцию, сначала запусти пункт 1 с полной ссылкой на плейлист/альбом. После отчёта выбери здесь лог именно этого запуска.' -ForegroundColor Gray
+        } else {
+            Write-Host 'В выбранном логе не обнаружены треки, которые можно надёжно сопоставить с неудачной загрузкой.' -ForegroundColor Yellow
+            Write-Host 'Если это старый запуск, созданный до снимков источника, сначала запусти пункт 1 с полной ссылкой на плейлист/альбом, чтобы создать точный снимок.' -ForegroundColor Gray
+        }
+        return
+    }
+    $queue = @($queue | Where-Object { -not (Test-NonRecoverableServiceFailure -Details ([string]$_.Details)) })
+    if ($queue.Count -eq 0) {
+        Write-Host "Очередь содержит только недоступные, удалённые или запрещённые сервисом позиции. Другие backend-модули для обхода этих ограничений запускаться не будут." -ForegroundColor Yellow
+        return
+    }
+    $queuePath = Join-Path $LogsDir "retry-queue-$RunTimestamp.csv"
+    $queue | Export-Csv -LiteralPath $queuePath -NoTypeInformation -Encoding UTF8
+    Write-Host ''
+    Write-Host ("Найдено треков для последовательного восстановления: {0}" -f $queue.Count) -ForegroundColor Cyan
+    $queue | ForEach-Object { Write-Host ("  [{0}] {1} — {2}" -f $_.TrackId, $_.TrackTitle, $_.Details) }
+    Write-Host "CSV очереди: $queuePath" -ForegroundColor DarkGray
+
+    $zeroCandidates = New-Object 'System.Collections.Generic.List[object]'
+    $nonzeroCandidates = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($candidate in $queue) {
+        foreach ($file in @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))) {
+            if ($file.Length -eq 0) { [void]$zeroCandidates.Add($candidate); break }
+            [void]$nonzeroCandidates.Add($candidate)
+            break
+        }
+    }
+    if ($zeroCandidates.Count -gt 0) {
+        $zeroDistinct = @($zeroCandidates | Group-Object TrackKey | ForEach-Object { $_.Group[0] })
+        Write-Host ("Для {0} проблемных треков найдены файлы нулевого размера; загрузчик может пропустить их из-за --skip-existing." -f $zeroDistinct.Count) -ForegroundColor Yellow
+        if ($Automatic) {
+            $movedZero = Move-CandidateFilesToQuarantine -Queue $zeroDistinct -RootPath $script:outputDir -OnlyZeroLength $true
+            Write-Host "Нулевые файлы безопасно перемещены в карантин (не удалены): $($movedZero.Moved). Папка: $($movedZero.Path)" -ForegroundColor Green
+        } else {
+            $moveZero = Read-MenuChoice "0 - оставить; 1 - переместить эти файлы в карантин и повторить загрузку" @("0","1") "0"
+            if ($moveZero -eq '1') {
+                $movedZero = Move-CandidateFilesToQuarantine -Queue $zeroDistinct -RootPath $script:outputDir -OnlyZeroLength $true
+                Write-Host "Перемещено в карантин: $($movedZero.Moved). Папка: $($movedZero.Path)" -ForegroundColor Green
+            }
+        }
+    }
+
+    if ($Automatic) {
+        $suspectExisting = New-Object 'System.Collections.Generic.List[object]'
+        $suspectSeen = @{}
+        foreach ($candidate in $queue) {
+            $candidateFiles = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
+            foreach ($file in $candidateFiles) {
+                if ($file.Length -le 0) { continue }
+                $expectedMs = 0.0
+                try { $expectedMs = [double]$candidate.DurationMs } catch { }
+                if ($expectedMs -le 0) { continue }
+
+                $probe = Test-AudioDuration -PythonExe $PythonExe -AudioPath $file.FullName -ExpectedDurationMs $candidate.DurationMs
+                if (-not $probe.Success -or -not $probe.ValidAgainstMetadata) {
+                    if (-not $suspectSeen.ContainsKey([string]$candidate.TrackKey)) {
+                        $suspectSeen[[string]$candidate.TrackKey] = $true
+                        [void]$suspectExisting.Add($candidate)
+                    }
+                }
+                break
+            }
+        }
+
+        if ($suspectExisting.Count -gt 0) {
+            Write-Host ("Найдено непустых файлов, которые не прошли проверку длительности/читаемости: {0}. Переношу их в карантин, не удаляя, чтобы можно было восстановить проверенную версию." -f $suspectExisting.Count) -ForegroundColor Yellow
+            $movedSuspect = Move-CandidateFilesToQuarantine -Queue @($suspectExisting.ToArray()) -RootPath $script:outputDir
+            Write-Host ("В карантин перемещено файлов: {0}. Папка: {1}" -f $movedSuspect.Moved, $movedSuspect.Path) -ForegroundColor Green
+        }
+    }
+
+    $existingCandidates = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($candidate in $queue) {
+        $candidateFiles = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
+        if ($candidateFiles.Count -gt 0) {
+            [void]$existingCandidates.Add($candidate)
+        }
+    }
+    if ($existingCandidates.Count -gt 0) {
+        $existingDistinct = @($existingCandidates | Group-Object TrackKey | ForEach-Object { $_.Group[0] })
+        Write-Host ("У {0} кандидатов всё ещё есть локальный аудиофайл. Он может быть полноценным, а может быть частичным." -f $existingDistinct.Count) -ForegroundColor Yellow
+        if ($Automatic) {
+            Write-Host 'Автоматическое восстановление не будет перезаписывать ненулевые файлы; они останутся на месте для проверки.' -ForegroundColor Gray
+        } else {
+            $moveExisting = Read-MenuChoice "0 - сохранить и пропустить; 1 - перенести эти файлы в карантин и попытаться скачать заново" @("0","1") "0"
+            if ($moveExisting -eq '1') {
+                $movedExisting = Move-CandidateFilesToQuarantine -Queue $existingDistinct -RootPath $script:outputDir
+                Write-Host "Перемещено файлов в карантин: $($movedExisting.Moved). Папка: $($movedExisting.Path)" -ForegroundColor Green
+            }
+        }
+    }
+
+    $stagingRoot = Join-Path (Split-Path -Parent $script:outputDir) ("{0}._DownloaderPlus_RecoveryStaging_{1}" -f (Split-Path -Leaf $script:outputDir), $RunTimestamp)
+    New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
+    $fallback = $null
+    $fallbackInitialized = $false
+    $results = New-Object 'System.Collections.Generic.List[object]'
+    $originalUrl = $script:sourceUrl
+
+    for ($i = 0; $i -lt $queue.Count; $i++) {
+        $candidate = $queue[$i]
+        Write-Host ''
+        Write-Host ("[{0}/{1}] {2} — {3}" -f ($i + 1), $queue.Count, $candidate.Artists, $candidate.TrackTitle) -ForegroundColor Cyan
+        $existingNow = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
+        if ($existingNow.Count -gt 0) {
+            [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = 'Пропущен: локальный файл оставлен'; Method = ''; Path = $existingNow[0].FullName; Details = 'Не перезаписывался, потому что локальный файл оставлен пользователем.' })
+            Write-Host 'У кандидата всё ещё есть локальный файл; по соображениям безопасности он не перезаписывается.' -ForegroundColor Yellow
+            continue
+        }
+
+        $script:sourceUrl = [string]$candidate.TrackUrl
+        $beforeFiles = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath) | ForEach-Object { $_.FullName.ToLowerInvariant() })
+        $pass = $null
+        if (-not $PrimaryAlreadyTried) {
+            $pass = Invoke-DownloadPass -PassName ("ВОССТАНОВЛЕНИЕ {0:D3} — ОСНОВНОЙ" -f ($i + 1)) -QualityValue $script:quality
+        }
+        $afterFiles = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
+        $newZeroFiles = @($afterFiles | Where-Object { $beforeFiles -notcontains $_.FullName.ToLowerInvariant() -and $_.Length -eq 0 })
+        if ($newZeroFiles.Count -gt 0) {
+            Write-Host 'Основной загрузчик оставил файл нулевого размера; он будет сохранён в карантине перед альтернативной попыткой.' -ForegroundColor Yellow
+            $zeroQuarantine = Move-CandidateFilesToQuarantine -Queue @($candidate) -RootPath $script:outputDir
+            if ($zeroQuarantine.Moved -gt 0) { Write-Host "Нулевой файл сохранён в карантине: $($zeroQuarantine.Path)" -ForegroundColor DarkGray }
+            $afterFiles = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
+        }
+        $newFiles = @($afterFiles | Where-Object { $beforeFiles -notcontains $_.FullName.ToLowerInvariant() -and $_.Length -gt 0 })
+        $verified = $null
+        foreach ($file in $newFiles) {
+            $probe = Test-AudioDuration -PythonExe $PythonExe -AudioPath $file.FullName -ExpectedDurationMs $candidate.DurationMs
+            if ($probe.Success -and ($probe.ValidAgainstMetadata -or [double]$candidate.DurationMs -le 0)) {
+                $verified = [pscustomobject]@{ File = $file; Probe = $probe }
+                break
+            }
+            if (-not $probe.Success -or -not $probe.ValidAgainstMetadata) {
+                if ($probe.Success) {
+                    Write-Host ("Полученный файл подозрительно отличается по длительности ({0:N1} с); он будет сохранён в карантине перед альтернативной попыткой." -f $probe.DurationSeconds) -ForegroundColor Yellow
+                } else {
+                    Write-Host 'Не удалось проверить длительность нового файла; он будет сохранён в карантине перед альтернативной попыткой.' -ForegroundColor Yellow
+                }
+                $quarantined = Move-CandidateFilesToQuarantine -Queue @($candidate) -RootPath $script:outputDir
+                if ($quarantined.Moved -gt 0) { Write-Host "Файл сохранён в карантине: $($quarantined.Path)" -ForegroundColor DarkGray }
+            }
+        }
+
+        if ($null -ne $verified) {
+            $detail = if ($verified.Probe.ValidAgainstMetadata) {
+                "Проверка длительности пройдена: $([Math]::Round($verified.Probe.DurationSeconds,1)) с."
+            } else {
+                'Аудиофайл читается, но длительность в метаданных источника неизвестна; проверь вручную.'
+            }
+            $recoveryStatus = if ($verified.Probe.ValidAgainstMetadata) { 'Успешно восстановлен' } else { 'Скачан, нужна ручная проверка' }
+            [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = $recoveryStatus; Method = 'Основной загрузчик'; Path = $verified.File.FullName; Details = $detail })
+            Write-Host $detail -ForegroundColor Green
+            continue
+        }
+
+        $stillExisting = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
+        if ($stillExisting.Count -gt 0) {
+            [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = 'Требует ручной проверки'; Method = 'Основной загрузчик'; Path = $stillExisting[0].FullName; Details = 'Файл появился, но его длительность не удалось подтвердить; он оставлен на диске.' })
+            continue
+        }
+
+        $directDetails = ''
+        try {
+            Write-Host '  Пробую второй backend: независимый клиент API Яндекс Музыки...' -ForegroundColor DarkCyan
+            $direct = Invoke-DirectApiRecoveryTrack -Candidate $candidate -PythonExe $PythonExe -StagingRoot $stagingRoot
+            if ($direct.Success) {
+                [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = 'Успешно восстановлен'; Method = 'Независимый API backend'; Path = $direct.Path; Details = $direct.Details })
+                Write-Host $direct.Details -ForegroundColor Green
+                continue
+            }
+            $directDetails = [string]$direct.Details
+        } catch {
+            $directDetails = $_.Exception.Message
+        }
+
+        if (Test-NonRecoverableServiceFailure -Details $directDetails) {
+            [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = 'Не повторялся: отказ сервиса/ограничение доступа'; Method = 'Независимый API backend'; Path = ''; Details = $directDetails })
+            Write-Host "Сервис отклонил запрос; другие методы для этого трека не запускаются: $directDetails" -ForegroundColor Yellow
+            continue
+        }
+
+        if (-not $fallbackInitialized) {
+            $fallback = Initialize-YtDlpRecovery -PythonExe $PythonExe
+            $fallbackInitialized = $true
+            if ($fallback.Enabled) { New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null }
+        }
+        if ($null -ne $fallback -and $fallback.Enabled) {
+            try {
+                $alternate = Invoke-YtDlpRecoveryTrack -Candidate $candidate -PythonExe $fallback.PythonExe -Browser $fallback.Browser -StagingRoot $stagingRoot
+                if ($alternate.Success) {
+                    [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = 'Успешно восстановлен'; Method = 'yt-dlp / резервный источник'; Path = $alternate.Path; Details = $alternate.Details })
+                    Write-Host $alternate.Details -ForegroundColor Green
+                    continue
+                }
+                $alternateDetails = $alternate.Details
+                if ($alternate.Path) { $alternateDetails += " Путь: $($alternate.Path)" }
+            } catch {
+                $alternateDetails = $_.Exception.Message
+            }
+        } else {
+            $alternateDetails = 'Резервный источник не был включён или не удалось установить yt-dlp.'
+        }
+        $primaryDetails = if ($null -ne $pass) { ($pass.Text -join ' ') } else { [string]$candidate.Details }
+        [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = 'Не удалось восстановить'; Method = 'Основной + API + yt-dlp'; Path = ''; Details = "$alternateDetails; второй backend: $directDetails; причина первичной неудачи: $primaryDetails" })
+        Write-Host "Не удалось восстановить: $($candidate.TrackTitle)" -ForegroundColor Red
+    }
+
+    $script:sourceUrl = $originalUrl
+    $resultPath = Join-Path $LogsDir "recovery-results-$RunTimestamp.csv"
+    $results.ToArray() | Export-Csv -LiteralPath $resultPath -NoTypeInformation -Encoding UTF8
+    "Очередь восстановления по логу: $PreviousLogPath" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+    "Отчёт восстановления: $resultPath" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+    Write-Host ''
+    Write-Host 'Обработка очереди восстановления завершена.' -ForegroundColor Green
+    Write-Host "Результаты по каждому треку: $resultPath" -ForegroundColor Green
+    if (Test-Path -LiteralPath $stagingRoot -PathType Container) {
+        Write-Host "Файлы, не прошедшие проверку длительности или импорт в библиотеку, могут остаться в staging: $stagingRoot" -ForegroundColor Yellow
+    }
+}
+
 function Find-Downloader([string]$PreferredPath) {
     if (-not [string]::IsNullOrWhiteSpace($PreferredPath) -and (Test-Path -LiteralPath $PreferredPath -PathType Leaf)) {
         return $PreferredPath
     }
-    $cmd = Get-Command 'yandex-music-downloader.exe' -CommandType Application -ErrorAction SilentlyContinue
-    if ($null -ne $cmd) { return $cmd.Source }
-    $cmd = Get-Command 'yandex-music-downloader' -CommandType Application -ErrorAction SilentlyContinue
-    if ($null -ne $cmd) { return $cmd.Source }
+
+    foreach ($commandName in @('yandex-music-downloader.exe', 'yandex-music-downloader')) {
+        $commands = @(Get-Command $commandName -CommandType Application -All -ErrorAction SilentlyContinue)
+        foreach ($command in $commands) {
+            $source = [string]$command.Source
+            if ([string]::IsNullOrWhiteSpace($source)) { continue }
+            if (Test-Path -LiteralPath $source -PathType Leaf) { return $source }
+        }
+    }
+
+    # pip installs console entry points into the Scripts folder next to Python.
+    # Search real interpreters as well, because Python's Scripts folder is not
+    # always added to PATH by the Windows installer.
+    $pythonCommands = @(Get-Command 'python.exe' -CommandType Application -All -ErrorAction SilentlyContinue)
+    foreach ($pythonCommand in $pythonCommands) {
+        $pythonPath = [string]$pythonCommand.Source
+        if ([string]::IsNullOrWhiteSpace($pythonPath)) { continue }
+        if ($pythonPath -match '(?i)[\\/]WindowsApps[\\/]') { continue }
+        if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) { continue }
+
+        $pythonRoot = Split-Path -Parent $pythonPath
+        $candidate = Join-Path (Join-Path $pythonRoot 'Scripts') 'yandex-music-downloader.exe'
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+
     return $null
 }
 
 function Find-PythonForDownloader([string]$ExecutablePath, [string]$FallbackExecutablePath) {
+    $bundledPython = Join-Path $scriptRoot 'runtime\python.exe'
+    if (Test-Path -LiteralPath $bundledPython -PathType Leaf) { return $bundledPython }
     $candidates = New-Object System.Collections.Generic.List[string]
     foreach ($path in @($ExecutablePath, $FallbackExecutablePath)) {
         if ([string]::IsNullOrWhiteSpace($path)) { continue }
@@ -464,11 +1475,22 @@ function Find-PythonForDownloader([string]$ExecutablePath, [string]$FallbackExec
             if (-not $candidates.Contains($candidate)) { [void]$candidates.Add($candidate) }
         } catch { }
     }
+
+    # Prefer an interpreter next to an existing downloader, then the first real
+    # Python found on PATH. Get-Command can return several matches; never return
+    # their Source properties as an array because the call operator needs one path.
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
     }
-    $cmd = Get-Command 'python.exe' -CommandType Application -ErrorAction SilentlyContinue
-    if ($null -ne $cmd) { return $cmd.Source }
+
+    $commands = @(Get-Command 'python.exe' -CommandType Application -All -ErrorAction SilentlyContinue)
+    foreach ($command in $commands) {
+        $source = [string]$command.Source
+        if ([string]::IsNullOrWhiteSpace($source)) { continue }
+        if ($source -match '(?i)[\\/]WindowsApps[\\/]') { continue }
+        if (Test-Path -LiteralPath $source -PathType Leaf) { return $source }
+    }
+
     return $null
 }
 
@@ -692,7 +1714,46 @@ function Get-DownloadPassFileStats([hashtable]$Before, [hashtable]$After, [strin
 }
 
 function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
-    $cliArgs = @('--token', $script:token, '--quality', $QualityValue, '--url', $script:sourceUrl, '--dir', $script:outputDir)
+    if (-not $script:primaryBackendReady) {
+        $message = if ([string]::IsNullOrWhiteSpace($script:primaryBackendDiagnostic)) {
+            'Основной CLI недоступен; передаю очередь независимым backend-модулям.'
+        } else {
+            "Основной CLI недоступен: $($script:primaryBackendDiagnostic). Передаю очередь независимым backend-модулям."
+        }
+        Write-Host $message -ForegroundColor Yellow
+        if (-not [string]::IsNullOrWhiteSpace($script:logPath)) {
+            @(
+                ''
+                "================ $PassName ================"
+                $message
+                'Первичный backend не запускался; файлы не изменялись.'
+            ) | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+        }
+        $snapshot = Get-AudioFileSnapshot -RootPath $script:outputDir
+        $fileStats = Get-DownloadPassFileStats -Before $snapshot -After $snapshot -Text ''
+        return [pscustomobject]@{
+            ExitCode = 127
+            Text = $message
+            FileStats = $fileStats
+        }
+    }
+
+    $usesBundledLauncher = $false
+    try {
+        $bundledPath = [System.IO.Path]::GetFullPath($bundledDownloader)
+        $activePath = [System.IO.Path]::GetFullPath($script:exePath)
+        $usesBundledLauncher = [string]::Equals($bundledPath, $activePath, [StringComparison]::OrdinalIgnoreCase)
+    } catch { }
+
+    if ($usesBundledLauncher) {
+        # The native launcher reads the token from this short-lived environment
+        # variable and injects it inside Python, not into the Windows command line.
+        $cliArgs = @('--quality', $QualityValue, '--url', $script:sourceUrl, '--dir', $script:outputDir)
+    } else {
+        # Compatibility path for an external upstream CLI that has not been
+        # wrapped by our launcher yet.
+        $cliArgs = @('--token', $script:token, '--quality', $QualityValue, '--url', $script:sourceUrl, '--dir', $script:outputDir)
+    }
 
     # Это ключевое условие: каждый запуск, включая повторные, пропускает уже имеющиеся файлы.
     if ($script:supportsSkipExisting) { $cliArgs += '--skip-existing' }
@@ -727,11 +1788,29 @@ function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
     $outputLines = New-Object 'System.Collections.Generic.List[string]'
     $global:LASTEXITCODE = 0
 
-    & $script:exePath @cliArgs 2>&1 | ForEach-Object {
-        $line = [string]$_
-        [void]$outputLines.Add($line)
-        Write-Host $line
-        Add-Content -LiteralPath $script:logPath -Value $line -Encoding UTF8
+    # Windows PowerShell 5.1 can turn native stderr into terminating errors when
+    # ErrorActionPreference=Stop. Python tracebacks then get truncated to their
+    # first line and the remaining stderr never reaches the log. Temporarily use
+    # Continue while collecting the native process output, then restore the
+    # wrapper's strict preference immediately.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $previousUpstreamToken = $env:YMDPLUS_UPSTREAM_TOKEN
+    try {
+        if ($usesBundledLauncher) { $env:YMDPLUS_UPSTREAM_TOKEN = $script:token }
+        $ErrorActionPreference = 'Continue'
+        & $script:exePath @cliArgs 2>&1 | ForEach-Object {
+            $line = [string]$_
+            [void]$outputLines.Add($line)
+            Write-Host $line
+            Add-Content -LiteralPath $script:logPath -Value $line -Encoding UTF8
+        }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        if ($null -eq $previousUpstreamToken) {
+            Remove-Item Env:\YMDPLUS_UPSTREAM_TOKEN -ErrorAction SilentlyContinue
+        } else {
+            $env:YMDPLUS_UPSTREAM_TOKEN = $previousUpstreamToken
+        }
     }
     $exitCode = $LASTEXITCODE
     $afterAudioFiles = Get-AudioFileSnapshot -RootPath $script:outputDir
@@ -928,7 +2007,7 @@ function Invoke-AlternativeTrack {
     Write-Host 'РЕЗЕРВНЫЙ ЗАГРУЗЧИК ДЛЯ ОДНОГО ПРОБЛЕМНОГО ТРЕКА' -ForegroundColor Cyan
     Write-Host 'Используется yt-dlp + актуальный плагин Yandex Music; авторизация берётся из браузерной сессии.' -ForegroundColor Gray
     Write-Host 'Файл будет помещён в отдельную папку _YandexMusic_Fallback, а не смешан с библиотекой автоматически.' -ForegroundColor Yellow
-    Write-Host 'Это позволяет проверить полную длительность и не создать незаметный дубликат в D:\Music.' -ForegroundColor Gray
+    Write-Host "Это позволяет проверить полную длительность и не смешать файл автоматически с основной библиотекой: $defaultDir." -ForegroundColor Gray
     Write-Host ''
 
     $trackUrl = Read-Host 'Прямая ссылка на ОДИН трек (пример: /album/123/track/456)'
@@ -964,9 +2043,8 @@ function Invoke-AlternativeTrack {
 
     Write-Host ''
     Write-Host "Python: $pythonExe" -ForegroundColor DarkGray
-    Write-Host 'Проверяю/устанавливаю yt-dlp и плагин. Токен из основного режима здесь не используется.' -ForegroundColor Gray
-    & $pythonExe -m pip install --upgrade 'yt-dlp[default]' yt-dlp-yandex-music
-    if ($LASTEXITCODE -ne 0) {
+    Write-Host 'Проверяю наличие yt-dlp и плагина. Токен из основного режима здесь не используется.' -ForegroundColor Gray
+    if (-not (Ensure-YtDlpBackend -PythonExe $pythonExe)) {
         Write-Host 'Не удалось установить резервный backend. Подробности показаны выше.' -ForegroundColor Red
         return
     }
@@ -1030,27 +2108,42 @@ $env:PYTHONIOENCODING = 'utf-8'
 # a buffer and appear only after the whole pass has finished.
 $env:PYTHONUNBUFFERED = '1'
 
-Clear-Host
-Write-Host '====================================================' -ForegroundColor Cyan
-Write-Host '   Яндекс Музыка — Downloader Plus' -ForegroundColor Cyan
-Write-Host '====================================================' -ForegroundColor Cyan
-Write-Host 'Токен вводится скрыто; сохранение использует Windows DPAPI и не требует модуля Microsoft.PowerShell.Security.' -ForegroundColor Gray
-Write-Host ''
-Write-Host 'Режим:'
-Write-Host '  1 — скачать музыку (обычный режим)'
-Write-Host '  2 — обновить загрузчик и выйти'
-Write-Host '  3 — обновить загрузчик и затем начать скачивание'
-Write-Host '  4 — попробовать резервный источник для одного проблемного трека (yt-dlp + сессия браузера)'
-Write-Host '  5 — создать отчёт по недоступным трекам из существующего лога (без скачивания)'
-Write-Host '  6 — проверить расшифровку сохранённого токена (без загрузки и без вывода токена)'
-Write-Host '  7 — проверить шифрование и повторную расшифровку токена (без сети и без изменения сохранённого файла)'
-Write-Host '  8 — повторить незавершённую загрузку по предыдущему логу'
-Write-Host '  0 — выход'
-$actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5','6','7','8') '1'
+if ($script:guiMode) {
+    $guiAction = [string]$env:YMDPLUS_GUI_ACTION
+    $actionChoice = switch ($guiAction.ToLowerInvariant()) {
+        'download' { '1' }
+        'export' { '10' }
+        'retry' { '9' }
+        'update' { '2' }
+        default { throw "Неизвестный режим графического приложения: $guiAction" }
+    }
+    Write-Host 'Downloader Plus — графический запуск' -ForegroundColor Cyan
+    Write-Host "Действие: $guiAction" -ForegroundColor Gray
+} else {
+    Clear-Host
+    Write-Host '====================================================' -ForegroundColor Cyan
+    Write-Host '   Яндекс Музыка — Downloader Plus' -ForegroundColor Cyan
+    Write-Host '====================================================' -ForegroundColor Cyan
+    Write-Host 'Токен вводится скрыто; сохранение использует Windows DPAPI и не требует модуля Microsoft.PowerShell.Security.' -ForegroundColor Gray
+    Write-Host ''
+    Write-Host 'Режим:'
+    Write-Host '  1 — скачать музыку (обычный режим)'
+    Write-Host '  2 — обновить загрузчик и выйти'
+    Write-Host '  3 — обновить загрузчик и затем начать скачивание'
+    Write-Host '  4 — попробовать резервный источник для одного проблемного трека (yt-dlp + сессия браузера)'
+    Write-Host '  5 — создать отчёт по недоступным трекам из существующего лога (без скачивания)'
+    Write-Host '  6 — проверить расшифровку сохранённого токена (без загрузки и без вывода токена)'
+    Write-Host '  7 — проверить шифрование и повторную расшифровку токена (без сети и без изменения сохранённого файла)'
+    Write-Host '  8 — повторить незавершённую загрузку по предыдущему логу'
+    Write-Host '  9 — восстановить неудачные треки (основной CLI → API-клиент → yt-dlp)'
+    Write-Host ' 10 — экспортировать список треков без скачивания аудио (CSV / JSON / TXT / XML)'
+    Write-Host '  0 — выход'
+    $actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5','6','7','8','9','10') '1'
+}
 if ($actionChoice -eq '0') { exit 0 }
 if ($actionChoice -eq '4') {
     Invoke-AlternativeTrack
-    Read-Host 'Нажми Enter для выхода' | Out-Null
+    if (-not $script:guiMode) { Read-Host 'Нажми Enter для выхода' | Out-Null }
     exit 0
 }
 if ($actionChoice -eq '5') {
@@ -1068,136 +2161,231 @@ if ($actionChoice -eq '7') {
     Read-Host 'Нажми Enter для выхода' | Out-Null
     exit 0
 }
-if ($actionChoice -eq '8') {
-    $script:resumeSettings = Select-PreviousDownloadLog
+if ($actionChoice -eq '8' -or $actionChoice -eq '9') {
+    if ($script:guiMode) {
+        $providedLogPath = [string]$env:YMDPLUS_GUI_LOG_PATH
+        if ([string]::IsNullOrWhiteSpace($providedLogPath) -or -not (Test-Path -LiteralPath $providedLogPath -PathType Leaf)) {
+            throw 'Графическое приложение не передало существующий журнал предыдущего запуска.'
+        }
+        $script:resumeSettings = Get-PreviousDownloadSettings -LogPath $providedLogPath
+    } else {
+        $script:resumeSettings = Select-PreviousDownloadLog
+    }
     if ($null -eq $script:resumeSettings) {
-        Read-Host 'Не удалось выбрать подходящий лог. Нажми Enter для выхода' | Out-Null
-        exit 1
+        if (-not $script:guiMode) { Read-Host 'Не удалось выбрать подходящий лог. Нажми Enter для выхода' | Out-Null }
+        throw 'Не удалось получить параметры предыдущего запуска из журнала.'
     }
     $script:resumeFromLog = $script:resumeSettings.LogPath
     Write-Host ''
-    Write-Host 'Повтор будет запущен по параметрам из выбранного лога:' -ForegroundColor Cyan
+    if ($actionChoice -eq '8') {
+        Write-Host 'Повтор будет запущен по параметрам из выбранного лога:' -ForegroundColor Cyan
+        Write-Host 'Повтор использует --skip-existing; отсутствующие треки будут обработаны снова, существующие обычно пропускаются.' -ForegroundColor Gray
+    } else {
+        Write-Host 'Будет сформирована очередь проблемных треков из выбранного лога.' -ForegroundColor Cyan
+        Write-Host 'Каждый трек сначала проверит основной загрузчик; оставшиеся ошибки можно попробовать скачать через yt-dlp по одному.' -ForegroundColor Gray
+    }
     Write-Host "Лог:    $($script:resumeSettings.LogPath)" -ForegroundColor DarkGray
     Write-Host "Ссылка: $($script:resumeSettings.Url)"
     Write-Host "Папка:  $($script:resumeSettings.OutputDir)"
     Write-Host "Качество по умолчанию: $($script:resumeSettings.FormatName)"
-    Write-Host 'Повтор использует --skip-existing; отсутствующие треки будут обработаны снова, существующие обычно пропускаются.' -ForegroundColor Gray
-    $confirmed = Read-MenuChoice 'Продолжить? (0 — отмена, 1 — да)' @('0','1') '1'
-    if ($confirmed -ne '1') { exit 0 }
+    if (-not $script:guiMode) {
+        $confirmed = Read-MenuChoice 'Продолжить? (0 — отмена, 1 — да)' @('0','1') '1'
+        if ($confirmed -ne '1') { exit 0 }
+    }
 }
 
-$script:exePath = Find-Downloader -PreferredPath $defaultExe
-if ($actionChoice -eq '2' -or $actionChoice -eq '3') {
-    $updated = Update-Downloader -ExecutablePath $script:exePath
-    if (-not $updated) {
-        Read-Host 'Нажми Enter для выхода' | Out-Null
-        exit 1
-    }
-    if ($actionChoice -eq '2') {
-        Read-Host 'Обновление завершено. Нажми Enter для выхода' | Out-Null
-        exit 0
-    }
+$script:exePath = $null
+$script:helpText = ''
+$script:supportsSkipExisting = $false
+$script:supportsEmbedCover = $false
+$script:supportsLyrics = $false
+$script:supportsDelay = $false
+$script:supportsTimeout = $false
+$script:supportsTries = $false
+$script:supportsRetryDelay = $false
+$script:supportsCoverResolution = $false
+$script:supportsForceMp3 = $false
+$script:supportsPathPattern = $false
+$supportsQuality = $false
+$supportsUrl = $false
+$supportsToken = $false
+$supportsDir = $false
+
+if ($actionChoice -ne '10') {
     $script:exePath = Find-Downloader -PreferredPath $defaultExe
+    if ($actionChoice -eq '2' -or $actionChoice -eq '3') {
+        $updated = Update-Downloader -ExecutablePath $script:exePath
+        if (-not $updated) {
+            if ($actionChoice -eq '2') {
+                if (-not $script:guiMode) { Read-Host 'Обновление не удалось. Нажми Enter для выхода' | Out-Null }
+                exit 1
+            }
+            Write-Host 'Обновление не удалось. Продолжаю с уже установленным backend, если он доступен; иначе включится резервная цепочка.' -ForegroundColor Yellow
+        } elseif ($actionChoice -eq '2') {
+            if (-not $script:guiMode) { Read-Host 'Обновление завершено. Нажми Enter для выхода' | Out-Null }
+            exit 0
+        }
+        $script:exePath = Find-Downloader -PreferredPath $defaultExe
+    }
+
+    if ([string]::IsNullOrWhiteSpace($script:exePath) -or -not (Test-Path -LiteralPath $script:exePath -PathType Leaf)) {
+        $script:primaryBackendDiagnostic = "Не найден yandex-music-downloader.exe; ожидаемый путь: $defaultExe"
+    } else {
+        $script:helpText = Get-DownloaderHelp -ExecutablePath $script:exePath
+        $script:supportsSkipExisting = $script:helpText -match '--skip-existing'
+        $script:supportsEmbedCover = $script:helpText -match '--embed-cover'
+        $script:supportsLyrics = $script:helpText -match '--lyrics-format'
+        $script:supportsDelay = $script:helpText -match '--delay'
+        $script:supportsTimeout = $script:helpText -match '--timeout'
+        $script:supportsTries = $script:helpText -match '--tries'
+        $script:supportsRetryDelay = $script:helpText -match '--retry-delay'
+        $script:supportsCoverResolution = $script:helpText -match '--cover-resolution'
+        $script:supportsForceMp3 = $script:helpText -match '--force-mp3'
+        $script:supportsPathPattern = $script:helpText -match '--path-pattern'
+        $supportsQuality = $script:helpText -match '--quality'
+        $supportsUrl = $script:helpText -match '--url'
+        $supportsToken = $script:helpText -match '--token'
+        $supportsDir = $script:helpText -match '--dir'
+
+        if (-not [string]::IsNullOrWhiteSpace($script:helpText) -and
+            $script:supportsSkipExisting -and
+            $supportsQuality -and $supportsUrl -and $supportsToken -and $supportsDir) {
+            $script:primaryBackendReady = $true
+            Write-Host ''
+            Write-Host "Основной загрузчик: $($script:exePath)" -ForegroundColor DarkGray
+        } else {
+            $script:primaryBackendDiagnostic = 'Основной CLI не ответил на --help или не поддерживает обязательные параметры --skip-existing, --quality, --url, --token и --dir'
+        }
+    }
+
+    if (-not $script:primaryBackendReady) {
+        Write-Host ''
+        Write-Host "Основной backend недоступен: $($script:primaryBackendDiagnostic)" -ForegroundColor Yellow
+        Write-Host 'Не завершаю работу: попробую получить список композиций и продолжить независимыми backend-модулями.' -ForegroundColor Cyan
+        if ($actionChoice -eq '8') {
+            Write-Host 'Повтор всего плейлиста через пункт 8 недоступен; переключаю этот запуск на последовательное восстановление треков.' -ForegroundColor Yellow
+            $actionChoice = '9'
+        }
+    }
+} else {
+    Write-Host 'Режим экспорта не использует основной yandex-music-downloader.exe.' -ForegroundColor DarkGray
 }
 
-if ([string]::IsNullOrWhiteSpace($script:exePath) -or -not (Test-Path -LiteralPath $script:exePath -PathType Leaf)) {
-    Write-Host 'Не удалось найти yandex-music-downloader.exe.' -ForegroundColor Red
-    Write-Host "Ожидаемый исходный путь: $defaultExe"
-    Write-Host 'Попробуй сначала пункт 2 (обновить загрузчик) или поправь $defaultExe в начале файла.'
-    Read-Host 'Нажми Enter для выхода' | Out-Null
-    exit 1
-}
-
-$script:helpText = Get-DownloaderHelp -ExecutablePath $script:exePath
-$script:supportsSkipExisting = $script:helpText -match '--skip-existing'
-$script:supportsEmbedCover = $script:helpText -match '--embed-cover'
-$script:supportsLyrics = $script:helpText -match '--lyrics-format'
-$script:supportsDelay = $script:helpText -match '--delay'
-$script:supportsTimeout = $script:helpText -match '--timeout'
-$script:supportsTries = $script:helpText -match '--tries'
-$script:supportsRetryDelay = $script:helpText -match '--retry-delay'
-$script:supportsCoverResolution = $script:helpText -match '--cover-resolution'
-$script:supportsForceMp3 = $script:helpText -match '--force-mp3'
-$script:supportsPathPattern = $script:helpText -match '--path-pattern'
-$supportsQuality = $script:helpText -match '--quality'
-$supportsUrl = $script:helpText -match '--url'
-$supportsToken = $script:helpText -match '--token'
-$supportsDir = $script:helpText -match '--dir'
+# If the primary CLI is incompatible, keep the run alive for the independent backends.
+# The primary CLI itself is only invoked when it advertises all required safety flags.
 
 Write-Host ''
-Write-Host "Загрузчик: $($script:exePath)" -ForegroundColor DarkGray
-if (-not $supportsSkipExisting) {
-    Write-Host 'В установленной версии не найден --skip-existing.' -ForegroundColor Red
-    Write-Host 'Чтобы не нарушить главное условие (не скачивать дубликаты), запуск отменён. Обнови загрузчик через пункт 2.' -ForegroundColor Yellow
-    Read-Host 'Нажми Enter для выхода' | Out-Null
-    exit 2
-}
-if (-not ($supportsQuality -and $supportsUrl -and $supportsToken -and $supportsDir)) {
-    Write-Host 'Установленная версия не поддерживает необходимые параметры --quality, --url, --token и/или --dir.' -ForegroundColor Red
-    Write-Host 'Обнови загрузчик через пункт 2 и попробуй снова.' -ForegroundColor Yellow
-    Read-Host 'Нажми Enter для выхода' | Out-Null
-    exit 2
-}
-
-Write-Host ''
-if ($actionChoice -eq '8' -and $null -ne $script:resumeSettings) {
+if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings) {
     $script:sourceUrl = $script:resumeSettings.Url
     $script:outputDir = $script:resumeSettings.OutputDir
-    Write-Host 'Для повтора используются ссылка и папка из выбранного лога.' -ForegroundColor Gray
+    Write-Host 'Для выбранного режима используются ссылка и папка из лога.' -ForegroundColor Gray
+} elseif ($script:guiMode) {
+    if (@('1','3','10') -contains $actionChoice) {
+        $script:sourceUrl = ([string]$env:YMDPLUS_GUI_SOURCE_URL).Trim()
+        if ([string]::IsNullOrWhiteSpace($script:sourceUrl)) { throw 'Не указана ссылка на плейлист, альбом, исполнителя или трек.' }
+    }
+    $guiOutputDir = [string]$env:YMDPLUS_GUI_OUTPUT_DIR
+    if ([string]::IsNullOrWhiteSpace($guiOutputDir)) {
+        if ($actionChoice -eq '10') { $guiOutputDir = Join-Path (Join-Path $env:USERPROFILE 'Documents') 'YandexMusicBackups' }
+        else { $guiOutputDir = $defaultDir }
+    }
+    $script:outputDir = $guiOutputDir.Trim()
 } else {
-    $sourceUrl = Read-DefaultText 'Ссылка на плейлист/альбом/исполнителя/отдельный трек' $defaultUrl
-    $script:sourceUrl = $sourceUrl
-    $script:outputDir = Read-DefaultText 'Папка для сохранения' $defaultDir
+    if (@('1','3','10') -contains $actionChoice) {
+        if ([string]::IsNullOrWhiteSpace($defaultUrl)) {
+            $sourceUrl = Read-Host 'Ссылка на плейлист/альбом/исполнителя/отдельный трек (обязательно)'
+            while ([string]::IsNullOrWhiteSpace($sourceUrl)) {
+                Write-Host 'Нужно указать прямую ссылку Яндекс Музыки.' -ForegroundColor Yellow
+                $sourceUrl = Read-Host 'Ссылка на источник'
+            }
+            $sourceUrl = $sourceUrl.Trim()
+        } else {
+            $sourceUrl = Read-DefaultText 'Ссылка на плейлист/альбом/исполнителя/отдельный трек' $defaultUrl
+        }
+        $script:sourceUrl = $sourceUrl
+    }
+    if ($actionChoice -eq '10') {
+        $defaultExportDir = Join-Path (Join-Path $env:USERPROFILE 'Documents') 'YandexMusicBackups'
+        $script:outputDir = Read-DefaultText 'Папка для файлов резервной копии' $defaultExportDir
+    } else {
+        $script:outputDir = Read-DefaultText 'Папка для сохранения' $defaultDir
+    }
 }
 
-Write-Host ''
-Write-Host 'Выбор качества/формата:' -ForegroundColor Cyan
-if ($script:supportsForceMp3) {
-    Write-Host '  1 — MP3 (только если поддерживается установленной версией)'
-    Write-Host '  2 — AAC/M4A 192 кбит/с (как в исходной команде, без повторного перекодирования)'
-    Write-Host '  3 — FLAC (если lossless доступен для трека и аккаунта)'
+if ($actionChoice -ne '10') {
     $formatDefaultChoice = '2'
-    if ($actionChoice -eq '8' -and $null -ne $script:resumeSettings) {
+    if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings) {
         if ($script:resumeSettings.ForceMp3) { $formatDefaultChoice = '1' }
         elseif ($script:resumeSettings.QualityValue -eq '2') { $formatDefaultChoice = '3' }
     }
-    $formatChoice = Read-MenuChoice 'Формат' @('1','2','3') $formatDefaultChoice
-    switch ($formatChoice) {
-        '1' { $script:quality = '1'; $script:forceMp3 = $true;  $script:formatName = 'MP3' }
-        '2' { $script:quality = '1'; $script:forceMp3 = $false; $script:formatName = 'AAC/M4A 192 kbps' }
-        '3' { $script:quality = '2'; $script:forceMp3 = $false; $script:formatName = 'FLAC' }
+    if ($script:guiMode) {
+        $guiQuality = ([string]$env:YMDPLUS_GUI_QUALITY).ToLowerInvariant()
+        switch ($guiQuality) {
+            'mp3' {
+                if ($script:supportsForceMp3) { $formatChoice = '1' }
+                else { $formatChoice = '1' }
+            }
+            'flac' { $formatChoice = if ($script:supportsForceMp3) { '3' } else { '2' } }
+            default { $formatChoice = if ($script:supportsForceMp3) { '2' } else { '1' } }
+        }
+    } else {
+        Write-Host ''
+        Write-Host 'Выбор качества/формата:' -ForegroundColor Cyan
+        if ($script:supportsForceMp3) {
+            Write-Host '  1 — MP3 (только если поддерживается установленной версией)'
+            Write-Host '  2 — AAC/M4A 192 кбит/с (как в исходной команде, без повторного перекодирования)'
+            Write-Host '  3 — FLAC (если lossless доступен для трека и аккаунта)'
+            $formatChoice = Read-MenuChoice 'Формат' @('1','2','3') $formatDefaultChoice
+        } else {
+            Write-Host '  1 — AAC/M4A 192 кбит/с (как в исходной команде)'
+            Write-Host '  2 — FLAC (если lossless доступен для трека и аккаунта)'
+            Write-Host '  (Установленная версия не предоставляет --force-mp3; MP3 не будет выдаваться за исходный формат.)' -ForegroundColor DarkYellow
+            $formatDefaultChoice = if ($formatDefaultChoice -eq '3') { '2' } else { '1' }
+            if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings -and $script:resumeSettings.ForceMp3) {
+                Write-Host 'В старом логе указан MP3, но текущий загрузчик не поддерживает --force-mp3. Повтор будет в AAC/M4A или FLAC.' -ForegroundColor Yellow
+            }
+            $formatChoice = Read-MenuChoice 'Формат' @('1','2') $formatDefaultChoice
+        }
+    }
+    if ($script:supportsForceMp3) {
+        switch ($formatChoice) {
+            '1' { $script:quality = '1'; $script:forceMp3 = $true;  $script:formatName = 'MP3' }
+            '2' { $script:quality = '1'; $script:forceMp3 = $false; $script:formatName = 'AAC/M4A 192 kbps' }
+            '3' { $script:quality = '2'; $script:forceMp3 = $false; $script:formatName = 'FLAC' }
+        }
+    } else {
+        switch ($formatChoice) {
+            '1' { $script:quality = '1'; $script:forceMp3 = $false; $script:formatName = 'AAC/M4A 192 kbps' }
+            '2' { $script:quality = '2'; $script:forceMp3 = $false; $script:formatName = 'FLAC' }
+        }
+    }
+
+    $script:lyricsChoice = '0'
+    if ($script:supportsLyrics) {
+        if ($script:guiMode) {
+            $script:lyricsChoice = if ($env:YMDPLUS_GUI_LYRICS -in @('1','2')) { $env:YMDPLUS_GUI_LYRICS } else { '0' }
+        } else {
+            Write-Host ''
+            Write-Host 'Тексты песен:'
+            Write-Host '  0 — не скачивать'
+            Write-Host '  1 — текст в тегах'
+            Write-Host '  2 — отдельные LRC-файлы с временными метками'
+            $script:lyricsChoice = Read-MenuChoice 'Тексты' @('0','1','2') '0'
+        }
+    }
+
+    $script:delay = '0'
+    if ($script:supportsDelay) {
+        if ($script:guiMode) {
+            $script:delay = if ($env:YMDPLUS_GUI_DELAY -eq '1') { '1' } else { '0' }
+        } else {
+            Write-Host ''
+            Write-Host 'Задержка между запросами: 0 — быстрее; 1 — осторожнее при ограничениях API.'
+            $script:delay = Read-MenuChoice 'Задержка в секундах' @('0','1') '0'
+        }
     }
 } else {
-    Write-Host '  1 — AAC/M4A 192 кбит/с (как в исходной команде)'
-    Write-Host '  2 — FLAC (если lossless доступен для трека и аккаунта)'
-    Write-Host '  (Установленная версия не предоставляет --force-mp3; MP3 не будет выдаваться за исходный формат.)' -ForegroundColor DarkYellow
-    $formatDefaultChoice = '1'
-    if ($actionChoice -eq '8' -and $null -ne $script:resumeSettings -and $script:resumeSettings.QualityValue -eq '2') { $formatDefaultChoice = '2' }
-    if ($actionChoice -eq '8' -and $null -ne $script:resumeSettings -and $script:resumeSettings.ForceMp3) {
-        Write-Host 'В старом логе указан MP3, но текущий загрузчик не поддерживает --force-mp3. Повтор будет в AAC/M4A или FLAC.' -ForegroundColor Yellow
-    }
-    $formatChoice = Read-MenuChoice 'Формат' @('1','2') $formatDefaultChoice
-    switch ($formatChoice) {
-        '1' { $script:quality = '1'; $script:forceMp3 = $false; $script:formatName = 'AAC/M4A 192 kbps' }
-        '2' { $script:quality = '2'; $script:forceMp3 = $false; $script:formatName = 'FLAC' }
-    }
-}
-
-$script:lyricsChoice = '0'
-if ($script:supportsLyrics) {
-    Write-Host ''
-    Write-Host 'Тексты песен:'
-    Write-Host '  0 — не скачивать'
-    Write-Host '  1 — текст в тегах'
-    Write-Host '  2 — отдельные LRC-файлы с временными метками'
-    $script:lyricsChoice = Read-MenuChoice 'Тексты' @('0','1','2') '0'
-}
-
-$script:delay = '0'
-if ($script:supportsDelay) {
-    Write-Host ''
-    Write-Host 'Задержка между запросами: 0 — быстрее; 1 — осторожнее при ограничениях API.'
-    $script:delay = Read-MenuChoice 'Задержка в секундах' @('0','1') '0'
+    $script:delay = if ($script:guiMode -and $env:YMDPLUS_GUI_DELAY -eq '1') { '1' } else { '0' }
 }
 
 # Persistent token storage: Windows DPAPI, bound to the current Windows user profile.
@@ -1209,62 +2397,75 @@ $tokenPtr = [IntPtr]::Zero
 $script:token = $null
 $useSavedToken = $false
 
-if (Test-Path -LiteralPath $tokenStorePath -PathType Leaf) {
+if ($script:guiMode) {
+    if (-not (Test-Path -LiteralPath $tokenStorePath -PathType Leaf)) {
+        throw 'Токен не настроен. Открой раздел «Настройки», введи токен Яндекс Музыки и сохрани его.'
+    }
     try {
         $storedCiphertext = (Get-Content -LiteralPath $tokenStorePath -Raw -ErrorAction Stop).Trim()
-        if ([string]::IsNullOrWhiteSpace($storedCiphertext)) {
-            throw 'Файл сохранённого токена пуст.'
-        }
-        $candidateToken = [YandexMusicDownloaderPlus.DpapiTokenStore]::UnprotectToSecureString($storedCiphertext)
-        Write-Host ''
-        Write-Host 'Найден сохранённый токен, зашифрованный для текущего пользователя Windows.' -ForegroundColor Cyan
-        $savedTokenChoice = Read-Host 'Enter — использовать его; N — ввести новый; D — удалить сохранённый и ввести новый [Enter/N/D]'
-        if ([string]::IsNullOrWhiteSpace($savedTokenChoice) -or $savedTokenChoice -match '^(?i:y|yes|д|да)$') {
-            $secureToken = $candidateToken
-            $useSavedToken = $true
-            Write-Host 'Используется сохранённый токен.' -ForegroundColor Green
-        } else {
-            $candidateToken.Dispose()
-            if ($savedTokenChoice -match '^(?i:d|delete|удалить)$') {
-                Remove-Item -LiteralPath $tokenStorePath -Force -ErrorAction Stop
-                Write-Host 'Сохранённый токен удалён.' -ForegroundColor Yellow
-            } else {
-                Write-Host 'Будет запрошен новый токен.' -ForegroundColor DarkGray
-            }
-        }
+        if ([string]::IsNullOrWhiteSpace($storedCiphertext)) { throw 'Файл сохранённого токена пуст.' }
+        $secureToken = [YandexMusicDownloaderPlus.DpapiTokenStore]::UnprotectToSecureString($storedCiphertext)
+        $useSavedToken = $true
     } catch {
-        Write-Host "Не удалось расшифровать сохранённый токен через Windows DPAPI: $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Host 'Введи токен заново. При сохранении файл будет заменён.' -ForegroundColor DarkGray
+        throw "Не удалось расшифровать токен через Windows DPAPI: $($_.Exception.Message)"
     }
-}
-
-if (-not $useSavedToken) {
-    $secureToken = Read-Host 'Вставь токен Яндекс Музыки (ввод скрыт)' -AsSecureString
-    if ($secureToken.Length -eq 0) {
-        Write-Host 'Токен не введён. Загрузка отменена.' -ForegroundColor Red
-        Read-Host 'Нажми Enter для выхода' | Out-Null
-        exit 1
-    }
-
-    $saveChoice = Read-Host 'Сохранить токен зашифрованным для следующих запусков этого пользователя Windows? [Y/n]'
-    $saveToken = [string]::IsNullOrWhiteSpace($saveChoice) -or $saveChoice -match '^(?i:y|yes|д|да)$'
-    if ($saveToken) {
+} else {
+    if (Test-Path -LiteralPath $tokenStorePath -PathType Leaf) {
         try {
-            New-Item -ItemType Directory -Path $tokenStoreDir -Force -ErrorAction Stop | Out-Null
-            $encryptedToken = [YandexMusicDownloaderPlus.DpapiTokenStore]::ProtectSecureString($secureToken)
-            Set-Content -LiteralPath $tokenStorePath -Value $encryptedToken -Encoding ASCII -ErrorAction Stop
-            Write-Host "Токен сохранён в зашифрованном виде: $tokenStorePath" -ForegroundColor Green
-            Write-Host 'Он не хранится в открытом виде в папке проекта или журнале.' -ForegroundColor DarkGray
+            $storedCiphertext = (Get-Content -LiteralPath $tokenStorePath -Raw -ErrorAction Stop).Trim()
+            if ([string]::IsNullOrWhiteSpace($storedCiphertext)) {
+                throw 'Файл сохранённого токена пуст.'
+            }
+            $candidateToken = [YandexMusicDownloaderPlus.DpapiTokenStore]::UnprotectToSecureString($storedCiphertext)
+            Write-Host ''
+            Write-Host 'Найден сохранённый токен, зашифрованный для текущего пользователя Windows.' -ForegroundColor Cyan
+            $savedTokenChoice = Read-Host 'Enter — использовать его; N — ввести новый; D — удалить сохранённый и ввести новый [Enter/N/D]'
+            if ([string]::IsNullOrWhiteSpace($savedTokenChoice) -or $savedTokenChoice -match '^(?i:y|yes|д|да)$') {
+                $secureToken = $candidateToken
+                $useSavedToken = $true
+                Write-Host 'Используется сохранённый токен.' -ForegroundColor Green
+            } else {
+                $candidateToken.Dispose()
+                if ($savedTokenChoice -match '^(?i:d|delete|удалить)$') {
+                    Remove-Item -LiteralPath $tokenStorePath -Force -ErrorAction Stop
+                    Write-Host 'Сохранённый токен удалён.' -ForegroundColor Yellow
+                } else {
+                    Write-Host 'Будет запрошен новый токен.' -ForegroundColor DarkGray
+                }
+            }
         } catch {
-            Write-Host "Не удалось сохранить токен через Windows DPAPI: $($_.Exception.Message)" -ForegroundColor Yellow
-            Write-Host 'Продолжаю работу без сохранения токена.' -ForegroundColor DarkGray
+            Write-Host "Не удалось расшифровать сохранённый токен через Windows DPAPI: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host 'Введи токен заново. При сохранении файл будет заменён.' -ForegroundColor DarkGray
         }
-    } else {
-        # Avoid accidentally reusing an old saved token if user opts not to store the new one.
-        if (Test-Path -LiteralPath $tokenStorePath -PathType Leaf) {
-            Remove-Item -LiteralPath $tokenStorePath -Force -ErrorAction SilentlyContinue
+    }
+
+    if (-not $useSavedToken) {
+        $secureToken = Read-Host 'Вставь токен Яндекс Музыки (ввод скрыт)' -AsSecureString
+        if ($secureToken.Length -eq 0) {
+            Write-Host 'Токен не введён. Загрузка отменена.' -ForegroundColor Red
+            Read-Host 'Нажми Enter для выхода' | Out-Null
+            exit 1
         }
-        Write-Host 'Токен останется только в памяти текущего запуска.' -ForegroundColor DarkGray
+
+        $saveChoice = Read-Host 'Сохранить токен зашифрованным для следующих запусков этого пользователя Windows? [Y/n]'
+        $saveToken = [string]::IsNullOrWhiteSpace($saveChoice) -or $saveChoice -match '^(?i:y|yes|д|да)$'
+        if ($saveToken) {
+            try {
+                New-Item -ItemType Directory -Path $tokenStoreDir -Force -ErrorAction Stop | Out-Null
+                $encryptedToken = [YandexMusicDownloaderPlus.DpapiTokenStore]::ProtectSecureString($secureToken)
+                Set-Content -LiteralPath $tokenStorePath -Value $encryptedToken -Encoding ASCII -ErrorAction Stop
+                Write-Host "Токен сохранён в зашифрованном виде: $tokenStorePath" -ForegroundColor Green
+                Write-Host 'Он не хранится в открытом виде в папке проекта или журнале.' -ForegroundColor DarkGray
+            } catch {
+                Write-Host "Не удалось сохранить токен через Windows DPAPI: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host 'Продолжаю работу без сохранения токена.' -ForegroundColor DarkGray
+            }
+        } else {
+            if (Test-Path -LiteralPath $tokenStorePath -PathType Leaf) {
+                Remove-Item -LiteralPath $tokenStorePath -Force -ErrorAction SilentlyContinue
+            }
+            Write-Host 'Токен останется только в памяти текущего запуска.' -ForegroundColor DarkGray
+        }
     }
 }
 
@@ -1272,6 +2473,44 @@ $tokenPtr = [IntPtr]::Zero
 try {
     $tokenPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
     $script:token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($tokenPtr)
+
+    if ($actionChoice -eq '10') {
+        $exportDir = [System.IO.Path]::GetFullPath($script:outputDir)
+        New-Item -ItemType Directory -Path $exportDir -Force -ErrorAction Stop | Out-Null
+        $exportTimestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $sourceId = ([uri]$script:sourceUrl).AbsolutePath.Trim('/') -replace '[^A-Za-z0-9_-]+', '-'
+        if ([string]::IsNullOrWhiteSpace($sourceId)) { $sourceId = 'playlist' }
+        $exportPrefix = "yandex-$sourceId-$exportTimestamp"
+        $script:logPath = Join-Path $exportDir "$exportPrefix-export.log"
+        @(
+            "Экспорт библиотеки: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+            "Источник: $($script:sourceUrl)"
+            "Файлы сохраняются в: $exportDir"
+            'Аудиоданные не загружаются.'
+            'Токен не записывается в журнал.'
+        ) | Out-File -FilePath $script:logPath -Encoding utf8
+
+        $exportPython = Find-PythonForDownloader -ExecutablePath $script:exePath -FallbackExecutablePath $defaultExe
+        Write-Host ''
+        Write-Host 'Экспортирую список композиций. Аудиофайлы скачиваться не будут...' -ForegroundColor Cyan
+        $exportResult = Invoke-PlaylistMetadataExport -SourceUrl $script:sourceUrl -PythonExe $exportPython -OutputDir $exportDir -Prefix $exportPrefix -DelaySeconds $script:delay
+        if (-not $exportResult.Success) {
+            "Ошибка экспорта: $($exportResult.Error)" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+            throw "Не удалось экспортировать библиотеку: $($exportResult.Error)"
+        }
+
+        "Экспортировано композиций: $($exportResult.Count)" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+        Write-Host ''
+        Write-Host "Экспортировано композиций: $($exportResult.Count)" -ForegroundColor Green
+        Write-Host 'Созданы файлы:' -ForegroundColor Cyan
+        Write-Host "  CSV для Soundiiz и таблиц: $($exportResult.Files.csv)"
+        Write-Host "  Полная резервная копия JSON: $($exportResult.Files.json)"
+        Write-Host "  Простой текстовый список: $($exportResult.Files.txt)"
+        Write-Host "  XML для совместимого импорта: $($exportResult.Files.xml)"
+        Write-Host "Журнал: $($script:logPath)" -ForegroundColor DarkGray
+        if (-not $script:guiMode) { Read-Host 'Нажми Enter для выхода' | Out-Null }
+        exit 0
+    }
 
     if (-not (Test-Path -LiteralPath $script:outputDir -PathType Container)) {
         New-Item -ItemType Directory -Path $script:outputDir -Force | Out-Null
@@ -1294,15 +2533,56 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($script:resumeFromLog)) {
         "Повторная попытка по предыдущему логу: $($script:resumeFromLog)" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
     }
+    if ($actionChoice -eq '9') {
+        'Режим: последовательное восстановление треков (пункт 9)' | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+    }
 
     Write-Host ''
     Write-Host "Формат: $($script:formatName)" -ForegroundColor Green
     Write-Host "Папка:  $($script:outputDir)"
     Write-Host "Лог:    $($script:logPath)"
     Write-Host 'Уже существующие треки будут пропускаться. Повторные проходы используют тот же механизм защиты от дубликатов.' -ForegroundColor Cyan
-    Write-Host 'Для остановки нажми Ctrl+C. Токен передаётся загрузчику как аргумент командной строки и поэтому может быть виден локальным средствам просмотра процессов.' -ForegroundColor DarkGray
+    if ($script:primaryBackendReady) { Write-Host 'Для остановки нажми Ctrl+C. Токен передаётся основному CLI как аргумент командной строки и поэтому может быть виден локальным средствам просмотра процессов.' -ForegroundColor DarkGray } else { Write-Host 'Для остановки нажми Ctrl+C. Токен резервного API-клиента передаётся через временную переменную окружения и не добавляется в командную строку.' -ForegroundColor DarkGray }
 
-    $firstPass = Invoke-DownloadPass -PassName 'ПРОХОД 1' -QualityValue $script:quality
+    if ($actionChoice -eq '9') {
+        $recoveryPython = Find-PythonForDownloader -ExecutablePath $script:exePath -FallbackExecutablePath $defaultExe
+        $skipPrimary = -not $script:primaryBackendReady
+        Invoke-RetryFailedTracks -PreviousLogPath $script:resumeFromLog -PythonExe $recoveryPython -LogsDir $logsDir -RunTimestamp $script:timestamp -Automatic:($skipPrimary -or $script:guiMode) -PrimaryAlreadyTried:$skipPrimary
+    } else {
+        $script:sourceInventoryRecords = @()
+        $script:previousSourceInventory = @()
+        $script:sourceBaselinePath = $null
+        $script:hasPreviousSourceInventory = $false
+        $script:sourceInventorySucceeded = $false
+
+        if (@('1','3') -contains $actionChoice) {
+            $inventoryPython = Find-PythonForDownloader -ExecutablePath $script:exePath -FallbackExecutablePath $defaultExe
+            Write-Host ''
+            Write-Host 'Сверяю список треков источника для отчёта об удалённых и неудачных композициях...' -ForegroundColor Cyan
+            $inventoryResult = Invoke-SourceInventory -SourceUrl $script:sourceUrl -PythonExe $inventoryPython -DelaySeconds $script:delay
+            if ($inventoryResult.Success -and $inventoryResult.Count -gt 0) {
+                $script:sourceInventorySucceeded = $true
+                $script:sourceInventoryRecords = @($inventoryResult.Tracks)
+                $sourceKey = Get-SourceSnapshotKey -SourceUrl $script:sourceUrl
+                $script:sourceBaselinePath = Join-Path $logsDir "source-baseline-$sourceKey.csv"
+                $runInventoryPath = Join-Path $logsDir "source-inventory-$($script:timestamp).csv"
+                $script:sourceInventoryRecords | Export-Csv -LiteralPath $runInventoryPath -NoTypeInformation -Encoding UTF8
+                if (Test-Path -LiteralPath $script:sourceBaselinePath -PathType Leaf) {
+                    $script:previousSourceInventory = @(Import-Csv -LiteralPath $script:sourceBaselinePath -ErrorAction SilentlyContinue)
+                    $script:hasPreviousSourceInventory = $true
+                }
+                "Снимок источника: $runInventoryPath" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+                Write-Host "В источнике найдено треков: $($script:sourceInventoryRecords.Count)" -ForegroundColor Green
+                Write-Host "Снимок запуска: $runInventoryPath" -ForegroundColor DarkGray
+            } else {
+                $inventoryError = if ($inventoryResult.Success) { 'Список источника вернулся пустым; снимок не обновлён, чтобы не помечать все старые треки как удалённые.' } else { [string]$inventoryResult.Error }
+                Write-Host "Не удалось получить полный список треков источника: $inventoryError" -ForegroundColor Yellow
+                Write-Host 'Загрузка продолжится; отчёт об удалённых из источника композициях в этом запуске будет неполным.' -ForegroundColor Gray
+                "Не удалось получить снимок источника: $inventoryError" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+            }
+        }
+
+        $firstPass = Invoke-DownloadPass -PassName 'ПРОХОД 1' -QualityValue $script:quality
     $hasErrors = Show-RunEnding -Text $firstPass.Text -ExitCode $firstPass.ExitCode -FileStats $firstPass.FileStats
     $lastPass = $firstPass
 
@@ -1310,7 +2590,7 @@ try {
         Write-Host ''
         Write-Host 'Похоже, текущая версия загрузчика не распознала современную ссылку вида /playlists/lk.…' -ForegroundColor Yellow
         Write-Host 'В репозитории загрузчика описывался похожий сбой. Можно попробовать привычный адрес избранного по логину: /users/ЛОГИН/playlists/3.' -ForegroundColor Gray
-        $retryLogin = Read-Host 'Логин Яндекса (Enter — пропустить этот способ)'
+        $retryLogin = if ($script:guiMode) { '' } else { Read-Host 'Логин Яндекса (Enter — пропустить этот способ)' }
         if (-not [string]::IsNullOrWhiteSpace($retryLogin)) {
             $safeLogin = $retryLogin.Trim()
             if ($safeLogin -match '^[A-Za-z0-9._-]+$') {
@@ -1326,19 +2606,19 @@ try {
         }
     }
 
-    if ($hasErrors -and $script:supportsSkipExisting -and -not ($firstPass.Text -match '(?i)playlist-not-found|NotFoundError')) {
+    if ($hasErrors -and $script:primaryBackendReady -and $script:supportsSkipExisting -and -not ($firstPass.Text -match '(?i)playlist-not-found|NotFoundError')) {
         Write-Host ''
         Write-Host 'Возможные ошибки: можно повторить загрузку. Успешно сохранённые файлы должны пропускаться через --skip-existing.' -ForegroundColor Yellow
         if ($script:quality -eq '2') {
             Write-Host '  0 — закончить'
             Write-Host '  1 — повторить в FLAC'
             Write-Host '  2 — повторить в AAC/M4A 192 кбит/с (может помочь, если FLAC недоступен)'
-            $retryChoice = Read-MenuChoice 'Повторный проход' @('0','1','2') '1'
+            $retryChoice = if ($script:guiMode) { '1' } else { Read-MenuChoice 'Повторный проход' @('0','1','2') '1' }
             if ($retryChoice -eq '1') {
                 $lastPass = Invoke-DownloadPass -PassName 'ПОВТОР FLAC' -QualityValue '2'
                 $stillErrors = Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode -FileStats $lastPass.FileStats
                 if ($stillErrors) {
-                    $fallbackChoice = Read-MenuChoice 'Остались ошибки. Попробовать AAC/M4A 192 кбит/с для ещё не скачанных треков? (1 — да, 0 — нет)' @('0','1') '1'
+                    $fallbackChoice = if ($script:guiMode) { '1' } else { Read-MenuChoice 'Остались ошибки. Попробовать AAC/M4A 192 кбит/с для ещё не скачанных треков? (1 — да, 0 — нет)' @('0','1') '1' }
                     if ($fallbackChoice -eq '1') {
                         $lastPass = Invoke-DownloadPass -PassName 'РЕЗЕРВНЫЙ ПРОХОД AAC/M4A 192' -QualityValue '1'
                         [void](Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode -FileStats $lastPass.FileStats)
@@ -1349,10 +2629,31 @@ try {
                 [void](Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode -FileStats $lastPass.FileStats)
             }
         } else {
-            $retryChoice = Read-MenuChoice 'Повторить один раз в том же качестве? (0 — нет, 1 — да)' @('0','1') '1'
+            $retryChoice = if ($script:guiMode) { if ($env:YMDPLUS_GUI_AUTO_RETRY -eq '1') { '1' } else { '0' } } else { Read-MenuChoice 'Повторить один раз в том же качестве? (0 — нет, 1 — да)' @('0','1') '1' }
             if ($retryChoice -eq '1') {
                 $lastPass = Invoke-DownloadPass -PassName 'ПОВТОРНЫЙ ПРОХОД' -QualityValue $script:quality
                 [void](Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode -FileStats $lastPass.FileStats)
+            }
+        }
+    }
+
+    if ($script:sourceInventorySucceeded -and @('1','3') -contains $actionChoice) {
+        $preFailoverLog = Get-Content -LiteralPath $script:logPath -Raw -ErrorAction SilentlyContinue
+        $preFailoverStatus = Write-SourceStatusReport -CurrentInventory $script:sourceInventoryRecords -PreviousInventory $script:previousSourceInventory -HasPreviousInventory $script:hasPreviousSourceInventory -SourceUrl $script:sourceUrl -OutputDir $script:outputDir -LogText $preFailoverLog -LogsDir $logsDir -RunTimestamp $script:timestamp -BaselinePath $script:sourceBaselinePath
+        $preRows = @(Import-Csv -LiteralPath $preFailoverStatus.ReportPath -ErrorAction SilentlyContinue | Where-Object { $_.Category -eq 'Не удалось скачать' })
+        $recoverableRows = @($preRows | Where-Object { -not (Test-NonRecoverableServiceFailure -Details ([string]$_.Details)) })
+        $lastExitCode = if ($null -ne $lastPass) { [int]$lastPass.ExitCode } else { 0 }
+        $globalFailureIsRecoverable = ($lastExitCode -ne 0) -and -not (Test-NonRecoverableRunFailure -Details ([string]$lastPass.Text))
+        if ($recoverableRows.Count -gt 0 -or $globalFailureIsRecoverable) {
+            Write-Host ''
+            Write-Host ("Основной backend оставил проблемные композиции. Кандидатов по отчёту: {0}." -f $recoverableRows.Count) -ForegroundColor Yellow
+            Write-Host 'Порядок автоматического восстановления: основной загрузчик уже проверен → независимый API-клиент → yt-dlp с браузерной сессией (последний способ запросит отдельное разрешение).' -ForegroundColor Gray
+            $autoFailoverChoice = if ($script:guiMode) { if ($env:YMDPLUS_GUI_AUTO_FAILOVER -eq '0') { '0' } else { '1' } } else { Read-MenuChoice "Попробовать резервные backend’ы для неудачных треков? (0 - нет, 1 - да)" @("0","1") "1" }
+            if ($autoFailoverChoice -eq '1') {
+                $recoveryPython = Find-PythonForDownloader -ExecutablePath $script:exePath -FallbackExecutablePath $defaultExe
+                Invoke-RetryFailedTracks -PreviousLogPath $script:logPath -PythonExe $recoveryPython -LogsDir $logsDir -RunTimestamp $script:timestamp -Automatic -PrimaryAlreadyTried
+                $postFailoverLog = Get-Content -LiteralPath $script:logPath -Raw -ErrorAction SilentlyContinue
+                [void](Write-SourceStatusReport -CurrentInventory $script:sourceInventoryRecords -PreviousInventory $script:previousSourceInventory -HasPreviousInventory $script:hasPreviousSourceInventory -SourceUrl $script:sourceUrl -OutputDir $script:outputDir -LogText $postFailoverLog -LogsDir $logsDir -RunTimestamp $script:timestamp -BaselinePath $script:sourceBaselinePath)
             }
         }
     }
@@ -1402,10 +2703,34 @@ try {
     Write-Host 'Готово.' -ForegroundColor Green
     Write-Host "Полный лог: $($script:logPath)"
     Write-Host "Отчёт:     $errorReportPath"
+    if ($script:sourceInventorySucceeded) {
+        [void](Write-SourceStatusReport -CurrentInventory $script:sourceInventoryRecords -PreviousInventory $script:previousSourceInventory -HasPreviousInventory $script:hasPreviousSourceInventory -SourceUrl $script:sourceUrl -OutputDir $script:outputDir -LogText $allLogText -LogsDir $logsDir -RunTimestamp $script:timestamp -BaselinePath $script:sourceBaselinePath)
+    }
+
     Write-Host 'Если отдельный трек всё равно не скачался, запусти этот же скрипт с прямой ссылкой на сам трек — так проще отделить проблему конкретного трека от проблемы всего плейлиста.' -ForegroundColor DarkGray
+    }
 } catch {
-    Write-Host "Ошибка запуска: $($_.Exception.Message)" -ForegroundColor Red
-    if (-not [string]::IsNullOrWhiteSpace($script:logPath)) { Write-Host "Проверь лог: $($script:logPath)" }
+    $launchError = [string]$_.Exception.Message
+    if ($script:guiMode) { $script:guiExitCode = 1 }
+    Write-Host "Ошибка запуска: $launchError" -ForegroundColor Red
+    if ($_.InvocationInfo -and $_.InvocationInfo.ScriptLineNumber) {
+        Write-Host "Место в скрипте: строка $($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor DarkYellow
+    }
+    if (-not [string]::IsNullOrWhiteSpace($_.ScriptStackTrace)) {
+        Write-Host 'Стек PowerShell:' -ForegroundColor DarkYellow
+        Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
+    }
+    if (-not [string]::IsNullOrWhiteSpace($script:logPath)) {
+        try {
+            @(
+                ''
+                "Ошибка оболочки: $launchError"
+                "Строка скрипта: $($_.InvocationInfo.ScriptLineNumber)"
+                "Стек PowerShell: $($_.ScriptStackTrace)"
+            ) | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+        } catch { }
+        Write-Host "Проверь лог: $($script:logPath)"
+    }
 } finally {
     if ($tokenPtr -ne [IntPtr]::Zero) {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($tokenPtr)
@@ -1414,4 +2739,5 @@ try {
     $script:token = $null
 }
 
-Read-Host 'Нажми Enter, чтобы закрыть окно' | Out-Null
+if (-not $script:guiMode) { Read-Host 'Нажми Enter, чтобы закрыть окно' | Out-Null }
+if ($script:guiMode -and $script:guiExitCode -ne 0) { exit $script:guiExitCode }
