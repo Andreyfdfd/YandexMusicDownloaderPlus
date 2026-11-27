@@ -296,6 +296,8 @@ def collect_inventory(source_url, delay_seconds=0.0):
         if delay_seconds > 0:
             time.sleep(delay_seconds)
         tracks = tracks_for_source(client, source_url, delay_seconds)
+        if not tracks:
+            raise RuntimeError("Основной API-клиент вернул пустой список композиций.")
         return [track_record(track, index) for index, track in enumerate(tracks, start=1)]
     except Exception as exc:
         primary_error = f"{type(exc).__name__}: {exc}"
