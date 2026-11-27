@@ -335,6 +335,8 @@
                                                Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="0,8,0,0"/>
                                     <Button Content="Сохранить настройки" Click="SaveSettings_Click" Style="{StaticResource AccentButton}"
                                             HorizontalAlignment="Left" Margin="0,18,0,0"/>
+                                    <Button Content="Обновить основной загрузчик" Click="UpdateDownloader_Click"
+                                            HorizontalAlignment="Left" Margin="0,10,0,0"/>
                                 </StackPanel>
                             </Border>
                             <Border Background="{StaticResource PanelBrush}" CornerRadius="14" Padding="22">
