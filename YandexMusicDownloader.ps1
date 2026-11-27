@@ -1127,7 +1127,24 @@ function Invoke-DirectApiRecoveryTrack([object]$Candidate, [string]$PythonExe, [
 
 function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, [string]$LogsDir, [string]$RunTimestamp, [switch]$Automatic, [switch]$PrimaryAlreadyTried) {
     $queueResult = Get-RetryQueueFromLog -PreviousLogPath $PreviousLogPath -OutputDir $script:outputDir -PythonExe $PythonExe -LogsDir $LogsDir -DelaySeconds $script:delay
-    if ($queueResult.Queue.Count -eq 0) {
+    $queue = @($queueResult.Queue)
+
+    # If the primary CLI failed before emitting per-track paths, use the already
+    # collected source inventory to identify only absent files. Never infer a
+    # missing track after an explicit service/account denial or rate limit.
+    if ($queue.Count -eq 0 -and $Automatic -and $PrimaryAlreadyTried -and @($script:sourceInventoryRecords).Count -gt 0) {
+        $primaryLogText = Get-Content -LiteralPath $PreviousLogPath -Raw -ErrorAction SilentlyContinue
+        if (-not (Test-NonRecoverableServiceFailure -Details $primaryLogText)) {
+            $globalReason = 'Основной backend завершился с ошибкой до создания отчёта по отдельным файлам.'
+            foreach ($record in @($script:sourceInventoryRecords)) {
+                $present = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$record.RelativeBasePath))
+                if ($present.Count -gt 0 -and @($present | Where-Object { $_.Length -gt 0 }).Count -gt 0) { continue }
+                Add-RetryCandidate -Queue ([ref]$queue) -Seen @{} -TrackRecord $record -Details $globalReason
+            }
+        }
+    }
+
+    if ($queue.Count -eq 0) {
         if ($queueResult.ReusedRecoveryQueue) {
             Write-Host 'В предыдущей очереди не осталось треков для повторного восстановления.' -ForegroundColor Green
         } elseif ([string]$script:resumeSettings.Url -match '/track/\d+') {
@@ -1139,7 +1156,7 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
         }
         return
     }
-    $queue = @($queueResult.Queue | Where-Object { -not (Test-NonRecoverableServiceFailure -Details ([string]$_.Details)) })
+    $queue = @($queue | Where-Object { -not (Test-NonRecoverableServiceFailure -Details ([string]$_.Details)) })
     if ($queue.Count -eq 0) {
         Write-Host 'Очередь содержит только недоступные, удалённые или запрещённые сервисом позиции. Другие backend’ы для обхода этих ограничений запускаться не будут.' -ForegroundColor Yellow
         return
