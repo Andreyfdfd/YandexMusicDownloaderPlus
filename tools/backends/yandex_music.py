@@ -87,29 +87,43 @@ def _parse_url(url: str) -> dict:
     if not any(u.netloc == d or u.netloc.endswith('.' + d) for d in _HOST_DOMAINS):
         raise ValueError('Не Я.Музыка URL')
     p = u.path
-    m = re.search(r'/album/(\d+)/track/(\d+)', p)
-    if m:
-        return {'type': 'track', 'albumId': m.group(1), 'trackId': m.group(2)}
-    m = re.search(r'/track/(\d+)', p)
-    if m:
-        return {'type': 'track', 'albumId': None, 'trackId': m.group(1)}
-    m = re.search(r'/album/(\d+)', p)
-    if m:
-        return {'type': 'album', 'albumId': m.group(1)}
-    m = re.search(r'/artist/(\d+)(?:/tracks)?    m = re.search(r'/podcast/(\d+)', p)
-    if m:
-        return {'type': 'album', 'albumId': m.group(1)}
-    m = re.search(r'/users/([^/]+)/playlists/(\d+)', p)
-    if m:
-        return {'type': 'playlist', 'owner': m.group(1), 'kinds': m.group(2)}
-    # UUID-плейлисты могут быть с префиксом типа `lk.` (личные плейлисты).
-    # API /playlist/{uuid} принимает полный идентификатор с префиксом.
-    m = re.search(r'/playlists/((?:[a-z]{1,4}\.)?[a-f0-9-]{32,40})', p, re.I)
-    if m:
-        return {'type': 'playlist', 'uuid': m.group(1)}
+
+    match = re.search(r'/album/(\d+)/track/(\d+)', p)
+    if match:
+        return {'type': 'track', 'albumId': match.group(1), 'trackId': match.group(2)}
+
+    match = re.search(r'/track/(\d+)', p)
+    if match:
+        return {'type': 'track', 'albumId': None, 'trackId': match.group(1)}
+
+    match = re.search(r'/album/(\d+)', p)
+    if match:
+        return {'type': 'album', 'albumId': match.group(1)}
+
+    match = re.search(r'/artist/(\d+)(?:/tracks)?$', p)
+    if match:
+        return {'type': 'artist', 'artistId': match.group(1)}
+
+    match = re.search(r'/podcast/(\d+)/episode/(\d+)', p)
+    if match:
+        return {'type': 'track', 'albumId': match.group(1), 'trackId': match.group(2)}
+
+    match = re.search(r'/podcast/(\d+)', p)
+    if match:
+        return {'type': 'album', 'albumId': match.group(1)}
+
+    match = re.search(r'/users/([^/]+)/playlists/(\d+)', p)
+    if match:
+        return {'type': 'playlist', 'owner': match.group(1), 'kinds': match.group(2)}
+
+    # UUID-плейлисты могут быть с префиксом lk. (личные плейлисты).
+    match = re.search(r'/playlists/((?:[a-z]{1,4}\.)?[a-f0-9-]{32,40})', p, re.I)
+    if match:
+        return {'type': 'playlist', 'uuid': match.group(1)}
+
     raise ValueError(
         'Не удалось распознать ссылку Я.Музыки. Поддерживаются ссылки на трек, '
-        'альбом, исполнителя и плейлист (включая UUID-плейлисты /playlists/{uuid}).'
+        'альбом, исполнителя, подкаст и плейлист (включая /playlists/{uuid}).'
     )
 
 
