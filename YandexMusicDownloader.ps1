@@ -1025,6 +1025,100 @@ function Invoke-YtDlpRecoveryTrack([object]$Candidate, [string]$PythonExe, [stri
     return [pscustomobject]@{ Success = $true; Path = $targetPath; Details = ("Резервный файл проверен по длительности ({0:N1} с из ожидаемых {1:N1} с)." -f $duration.DurationSeconds, ([double]$Candidate.DurationMs / 1000.0)) }
 }
 
+function Test-NonRecoverableServiceFailure([string]$Details) {
+    if ([string]::IsNullOrWhiteSpace($Details)) { return $false }
+    # Do not rotate downloaders to override service-side or account-side denials.
+    return $Details -match '(?i)(не доступен для скачивания|недоступен для скачивания|playlist-not-found|not-found|not-allowed|HTTP\\s*(401|403|404|429)|\\b(401|403|404|429)\\b|unauthori[sz]ed|forbidden|rate.?limit|too many requests|quota exceeded|subscription required|region restricted|DRM|smart_preview)'
+}
+
+function Invoke-DirectApiRecoveryTrack([object]$Candidate, [string]$PythonExe, [string]$StagingRoot) {
+    $backendScript = Join-Path (Join-Path $scriptRoot 'tools') 'backends\\yandex_music_cli.py'
+    if (-not (Test-Path -LiteralPath $backendScript -PathType Leaf)) {
+        return [pscustomobject]@{ Success = $false; Path = ''; Details = "Файл второго backend не найден: $backendScript" }
+    }
+    if ([string]::IsNullOrWhiteSpace($PythonExe) -or -not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
+        return [pscustomobject]@{ Success = $false; Path = ''; Details = 'Не найден встроенный Python для второго backend.' }
+    }
+
+    $stageKey = [string]$Candidate.TrackKey
+    if ([string]::IsNullOrWhiteSpace($stageKey)) { $stageKey = [string]$Candidate.TrackId }
+    $stageKey = $stageKey -replace '[^A-Za-z0-9_-]', '_'
+    $trackStage = Join-Path $StagingRoot ("direct-api-" + $stageKey)
+    New-Item -ItemType Directory -Path $trackStage -Force | Out-Null
+    $backendQuality = if ($script:quality -eq '2') { 'flac' } else { 'auto' }
+
+    $previousToken = $env:YMDPLUS_BACKEND_TOKEN
+    $env:YMDPLUS_BACKEND_TOKEN = $script:token
+    $jsonLines = New-Object 'System.Collections.Generic.List[string]'
+    $outputLines = New-Object 'System.Collections.Generic.List[string]'
+    $previousPreference = $ErrorActionPreference
+    $exitCode = 1
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $PythonExe $backendScript --url ([string]$Candidate.TrackUrl) --output-dir $trackStage --quality $backendQuality 2>&1 | ForEach-Object {
+            $line = [string]$_
+            [void]$outputLines.Add($line)
+            if ($line.TrimStart().StartsWith('{') -and $line -match '"success"') {
+                [void]$jsonLines.Add($line.Trim())
+            } else {
+                Write-Host $line -ForegroundColor DarkGray
+            }
+            if (-not [string]::IsNullOrWhiteSpace($script:logPath)) {
+                Add-Content -LiteralPath $script:logPath -Value ("[Direct API] " + $line) -Encoding UTF8
+            }
+        }
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
+        if ($null -eq $previousToken) {
+            Remove-Item Env:\YMDPLUS_BACKEND_TOKEN -ErrorAction SilentlyContinue
+        } else {
+            $env:YMDPLUS_BACKEND_TOKEN = $previousToken
+        }
+    }
+
+    if ($jsonLines.Count -eq 0) {
+        return [pscustomobject]@{ Success = $false; Path = ''; Details = "Второй backend завершился с кодом $exitCode без структурированного результата. $($outputLines -join ' ')" }
+    }
+    try {
+        $payload = $jsonLines[$jsonLines.Count - 1] | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return [pscustomobject]@{ Success = $false; Path = ''; Details = "Не удалось разобрать результат второго backend: $($_.Exception.Message)" }
+    }
+    if (-not $payload.success) {
+        return [pscustomobject]@{ Success = $false; Path = ''; Details = [string]$payload.error }
+    }
+
+    $candidatePath = [string]$payload.path
+    if ([string]::IsNullOrWhiteSpace($candidatePath) -or -not (Test-Path -LiteralPath $candidatePath -PathType Leaf)) {
+        return [pscustomobject]@{ Success = $false; Path = $candidatePath; Details = 'Второй backend сообщил об успехе, но аудиофайл в staging не найден.' }
+    }
+    $candidateFile = Get-Item -LiteralPath $candidatePath -ErrorAction Stop
+    if (@('.m4a','.mp3','.flac') -notcontains $candidateFile.Extension.ToLowerInvariant()) {
+        return [pscustomobject]@{ Success = $false; Path = $candidateFile.FullName; Details = "Формат $($candidateFile.Extension) не поддерживается библиотекой; файл оставлен в staging." }
+    }
+
+    $duration = Test-AudioDuration -PythonExe $PythonExe -AudioPath $candidateFile.FullName -ExpectedDurationMs $Candidate.DurationMs
+    if (-not $duration.Success -or -not $duration.ValidAgainstMetadata) {
+        $reason = if (-not $duration.Success) { $duration.Error } else { "Длительность {0:N1} с не согласуется с ожидаемыми {1:N1} с." -f $duration.DurationSeconds, ([double]$Candidate.DurationMs / 1000.0) }
+        return [pscustomobject]@{ Success = $false; Path = $candidateFile.FullName; Details = "Файл оставлен в staging: $reason" }
+    }
+
+    $relative = ([string]$Candidate.RelativeBasePath).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+    $targetBase = Join-Path $script:outputDir $relative
+    $targetPath = $targetBase + $candidateFile.Extension
+    New-Item -ItemType Directory -Path (Split-Path -Parent $targetPath) -Force | Out-Null
+    if (Test-Path -LiteralPath $targetPath) {
+        return [pscustomobject]@{ Success = $false; Path = $candidateFile.FullName; Details = "Целевой файл уже существует; результат оставлен в staging: $targetPath" }
+    }
+    Move-Item -LiteralPath $candidateFile.FullName -Destination $targetPath -ErrorAction Stop
+    return [pscustomobject]@{
+        Success = $true
+        Path = $targetPath
+        Details = ("Второй backend прошёл проверку длительности: {0:N1} с из ожидаемых {1:N1} с. Формат: {2}." -f $duration.DurationSeconds, ([double]$Candidate.DurationMs / 1000.0), $candidateFile.Extension.ToUpperInvariant())
+    }
+}
+
 function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, [string]$LogsDir, [string]$RunTimestamp) {
     $queueResult = Get-RetryQueueFromLog -PreviousLogPath $PreviousLogPath -OutputDir $script:outputDir -PythonExe $PythonExe -LogsDir $LogsDir -DelaySeconds $script:delay
     if ($queueResult.Queue.Count -eq 0) {
