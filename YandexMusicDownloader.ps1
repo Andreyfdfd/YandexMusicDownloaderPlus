@@ -1156,15 +1156,20 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
     # If the primary CLI failed before emitting per-track paths, use the already
     # collected source inventory to identify only absent files. Never infer a
     # missing track after an explicit service/account denial or rate limit.
-    if ($queue.Count -eq 0 -and $Automatic -and $PrimaryAlreadyTried -and @($script:sourceInventoryRecords).Count -gt 0) {
+    $sourceInventoryCount = 0
+    if ($null -ne $script:sourceInventoryRecords) {
+        $sourceInventoryCount = @($script:sourceInventoryRecords).Count
+    }
+    if ($queue.Count -eq 0 -and $Automatic -and $PrimaryAlreadyTried -and $sourceInventoryCount -gt 0) {
         $primaryLogText = Get-Content -LiteralPath $PreviousLogPath -Raw -ErrorAction SilentlyContinue
         if (-not (Test-NonRecoverableRunFailure -Details $primaryLogText)) {
             $globalReason = 'Основной backend завершился с ошибкой до создания отчёта по отдельным файлам.'
             $inventoryQueue = New-Object 'System.Collections.Generic.List[object]'
             $inventorySeen = @{}
-            foreach ($record in @($script:sourceInventoryRecords)) {
+            foreach ($record in $script:sourceInventoryRecords) {
                 $present = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$record.RelativeBasePath))
-                if ($present.Count -gt 0 -and @($present | Where-Object { $_.Length -gt 0 }).Count -gt 0) { continue }
+                $nonzeroPresent = @($present | Where-Object { $_.Length -gt 0 })
+                if ($nonzeroPresent.Count -gt 0) { continue }
                 Add-RetryCandidate -Queue $inventoryQueue -Seen $inventorySeen -TrackRecord $record -Details $globalReason
             }
             $queue = @($inventoryQueue.ToArray())
@@ -1221,7 +1226,8 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
 
     $existingCandidates = New-Object 'System.Collections.Generic.List[object]'
     foreach ($candidate in $queue) {
-        if (@(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath)).Count -gt 0) {
+        $candidateFiles = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
+        if ($candidateFiles.Count -gt 0) {
             [void]$existingCandidates.Add($candidate)
         }
     }
