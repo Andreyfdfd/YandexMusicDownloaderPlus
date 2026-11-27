@@ -10,7 +10,11 @@ from xml.etree import ElementTree as ET
 
 TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
-from source_inventory import (\n    direct_api_track_record,\n    is_nonrecoverable_service_failure,\n    write_export_files,\n)  # noqa: E402
+from source_inventory import (
+    direct_api_track_record,
+    is_nonrecoverable_service_failure,
+    write_export_files,
+)  # noqa: E402
 
 
 def main() -> int:
@@ -63,7 +67,7 @@ def main() -> int:
     assert direct_record["TrackId"] == "900"
     assert direct_record["TrackUrl"].endswith("/album/901/track/900")
     assert direct_record["ISRC"] == "RUA1A2600009"
-    assert direct_record["RelativeBasePath"] == "Исполнитель/Сборник/03 - Ночной маршрут"
+    assert direct_record["RelativeBasePath"] == "Исполнитель/Сборник/3 - Ночной маршрут"
     assert "\\" not in direct_record["RelativeBasePath"]
 
     with tempfile.TemporaryDirectory(prefix="ymdp-export-test-") as temp_dir:
