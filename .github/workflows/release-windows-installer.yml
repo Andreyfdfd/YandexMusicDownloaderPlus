@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - release/windows-installer-preview
+      - feature/backend-failover-and-library-export
+  pull_request:
+    branches:
+      - release/windows-installer-preview
+      - feature/failed-track-recovery
   workflow_dispatch:
 
 permissions:
@@ -44,6 +49,7 @@ jobs:
           retention-days: 14
 
       - name: Publish separate preview release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feature/backend-failover-and-library-export'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v0.2.0-preview.3
