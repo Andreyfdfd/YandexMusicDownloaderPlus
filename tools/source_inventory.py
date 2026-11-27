@@ -269,6 +269,8 @@ def tracks_for_source_direct_api(source_url, token):
         tracks = [module._fetch_single_track(parsed["trackId"], parsed.get("albumId"), token)]
     elif source_type == "album":
         tracks = module._fetch_album(parsed["albumId"], token)
+    elif source_type == "artist":
+        tracks = module._fetch_artist(parsed["artistId"], token)
     elif source_type == "playlist":
         if parsed.get("uuid"):
             tracks = module._fetch_playlist_uuid(parsed["uuid"], token)
