@@ -1918,7 +1918,7 @@ $supportsDir = $script:helpText -match '--dir'
 
 Write-Host ''
 Write-Host "Загрузчик: $($script:exePath)" -ForegroundColor DarkGray
-if (-not $supportsSkipExisting) {
+if ($actionChoice -ne '10' -and -not $supportsSkipExisting) {
     Write-Host 'В установленной версии не найден --skip-existing.' -ForegroundColor Red
     Write-Host 'Чтобы не нарушить главное условие (не скачивать дубликаты), запуск отменён. Обнови загрузчик через пункт 2.' -ForegroundColor Yellow
     Read-Host 'Нажми Enter для выхода' | Out-Null
