@@ -29,6 +29,8 @@ $upstreamArchive = 'https://github.com/llistochek/yandex-music-downloader/archiv
 
 $script:exePath = $null
 $script:helpText = ''
+$script:primaryBackendReady = $false
+$script:primaryBackendDiagnostic = ''
 $script:outputDir = $null
 $script:sourceUrl = $null
 $script:token = $null
@@ -1668,6 +1670,30 @@ function Get-DownloadPassFileStats([hashtable]$Before, [hashtable]$After, [strin
 }
 
 function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
+    if (-not $script:primaryBackendReady) {
+        $message = if ([string]::IsNullOrWhiteSpace($script:primaryBackendDiagnostic)) {
+            'Основной CLI недоступен; передаю очередь независимым backend-модулям.'
+        } else {
+            "Основной CLI недоступен: $($script:primaryBackendDiagnostic). Передаю очередь независимым backend-модулям."
+        }
+        Write-Host $message -ForegroundColor Yellow
+        if (-not [string]::IsNullOrWhiteSpace($script:logPath)) {
+            @(
+                ''
+                "================ $PassName ================"
+                $message
+                'Первичный backend не запускался; файлы не изменялись.'
+            ) | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+        }
+        $snapshot = Get-AudioFileSnapshot -RootPath $script:outputDir
+        $fileStats = Get-DownloadPassFileStats -Before $snapshot -After $snapshot -Text ''
+        return [pscustomobject]@{
+            ExitCode = 127
+            Text = $message
+            FileStats = $fileStats
+        }
+    }
+
     $cliArgs = @('--token', $script:token, '--quality', $QualityValue, '--url', $script:sourceUrl, '--dir', $script:outputDir)
 
     # Это ключевое условие: каждый запуск, включая повторные, пропускает уже имеющиеся файлы.
@@ -2112,46 +2138,50 @@ if ($actionChoice -ne '10') {
     }
 
     if ([string]::IsNullOrWhiteSpace($script:exePath) -or -not (Test-Path -LiteralPath $script:exePath -PathType Leaf)) {
-        Write-Host 'Не удалось найти yandex-music-downloader.exe.' -ForegroundColor Red
-        Write-Host "Ожидаемый исходный путь: $defaultExe"
-        Write-Host 'Попробуй сначала пункт 2 (обновить загрузчик) или поправь $defaultExe в начале файла.'
-        Read-Host 'Нажми Enter для выхода' | Out-Null
-        exit 1
+        $script:primaryBackendDiagnostic = "Не найден yandex-music-downloader.exe; ожидаемый путь: $defaultExe"
+    } else {
+        $script:helpText = Get-DownloaderHelp -ExecutablePath $script:exePath
+        $script:supportsSkipExisting = $script:helpText -match '--skip-existing'
+        $script:supportsEmbedCover = $script:helpText -match '--embed-cover'
+        $script:supportsLyrics = $script:helpText -match '--lyrics-format'
+        $script:supportsDelay = $script:helpText -match '--delay'
+        $script:supportsTimeout = $script:helpText -match '--timeout'
+        $script:supportsTries = $script:helpText -match '--tries'
+        $script:supportsRetryDelay = $script:helpText -match '--retry-delay'
+        $script:supportsCoverResolution = $script:helpText -match '--cover-resolution'
+        $script:supportsForceMp3 = $script:helpText -match '--force-mp3'
+        $script:supportsPathPattern = $script:helpText -match '--path-pattern'
+        $supportsQuality = $script:helpText -match '--quality'
+        $supportsUrl = $script:helpText -match '--url'
+        $supportsToken = $script:helpText -match '--token'
+        $supportsDir = $script:helpText -match '--dir'
+
+        if (-not [string]::IsNullOrWhiteSpace($script:helpText) -and
+            $script:supportsSkipExisting -and
+            $supportsQuality -and $supportsUrl -and $supportsToken -and $supportsDir) {
+            $script:primaryBackendReady = $true
+            Write-Host ''
+            Write-Host "Основной загрузчик: $($script:exePath)" -ForegroundColor DarkGray
+        } else {
+            $script:primaryBackendDiagnostic = 'Основной CLI не ответил на --help или не поддерживает обязательные параметры --skip-existing, --quality, --url, --token и --dir'
+        }
     }
 
-    $script:helpText = Get-DownloaderHelp -ExecutablePath $script:exePath
-    $script:supportsSkipExisting = $script:helpText -match '--skip-existing'
-    $script:supportsEmbedCover = $script:helpText -match '--embed-cover'
-    $script:supportsLyrics = $script:helpText -match '--lyrics-format'
-    $script:supportsDelay = $script:helpText -match '--delay'
-    $script:supportsTimeout = $script:helpText -match '--timeout'
-    $script:supportsTries = $script:helpText -match '--tries'
-    $script:supportsRetryDelay = $script:helpText -match '--retry-delay'
-    $script:supportsCoverResolution = $script:helpText -match '--cover-resolution'
-    $script:supportsForceMp3 = $script:helpText -match '--force-mp3'
-    $script:supportsPathPattern = $script:helpText -match '--path-pattern'
-    $supportsQuality = $script:helpText -match '--quality'
-    $supportsUrl = $script:helpText -match '--url'
-    $supportsToken = $script:helpText -match '--token'
-    $supportsDir = $script:helpText -match '--dir'
-
-    Write-Host ''
-    Write-Host "Загрузчик: $($script:exePath)" -ForegroundColor DarkGray
+    if (-not $script:primaryBackendReady) {
+        Write-Host ''
+        Write-Host "Основной backend недоступен: $($script:primaryBackendDiagnostic)" -ForegroundColor Yellow
+        Write-Host 'Не завершаю работу: попробую получить список композиций и продолжить независимыми backend-модулями.' -ForegroundColor Cyan
+        if ($actionChoice -eq '8') {
+            Write-Host 'Повтор всего плейлиста через пункт 8 недоступен; переключаю этот запуск на последовательное восстановление треков.' -ForegroundColor Yellow
+            $actionChoice = '9'
+        }
+    }
 } else {
     Write-Host 'Режим экспорта не использует основной yandex-music-downloader.exe.' -ForegroundColor DarkGray
 }
-if ($actionChoice -ne '10' -and -not $supportsSkipExisting) {
-    Write-Host 'В установленной версии не найден --skip-existing.' -ForegroundColor Red
-    Write-Host 'Чтобы не нарушить главное условие (не скачивать дубликаты), запуск отменён. Обнови загрузчик через пункт 2.' -ForegroundColor Yellow
-    Read-Host 'Нажми Enter для выхода' | Out-Null
-    exit 2
-}
-if ($actionChoice -ne '10' -and -not ($supportsQuality -and $supportsUrl -and $supportsToken -and $supportsDir)) {
-    Write-Host 'Установленная версия не поддерживает необходимые параметры --quality, --url, --token и/или --dir.' -ForegroundColor Red
-    Write-Host 'Обнови загрузчик через пункт 2 и попробуй снова.' -ForegroundColor Yellow
-    Read-Host 'Нажми Enter для выхода' | Out-Null
-    exit 2
-}
+
+# If the primary CLI is incompatible, keep the run alive for the independent backends.
+# The primary CLI itself is only invoked when it advertises all required safety flags.
 
 Write-Host ''
 if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings) {
@@ -2373,11 +2403,12 @@ try {
     Write-Host "Папка:  $($script:outputDir)"
     Write-Host "Лог:    $($script:logPath)"
     Write-Host 'Уже существующие треки будут пропускаться. Повторные проходы используют тот же механизм защиты от дубликатов.' -ForegroundColor Cyan
-    Write-Host 'Для остановки нажми Ctrl+C. Токен передаётся загрузчику как аргумент командной строки и поэтому может быть виден локальным средствам просмотра процессов.' -ForegroundColor DarkGray
+    if ($script:primaryBackendReady) { Write-Host 'Для остановки нажми Ctrl+C. Токен передаётся основному CLI как аргумент командной строки и поэтому может быть виден локальным средствам просмотра процессов.' -ForegroundColor DarkGray } else { Write-Host 'Для остановки нажми Ctrl+C. Токен резервного API-клиента передаётся через временную переменную окружения и не добавляется в командную строку.' -ForegroundColor DarkGray }
 
     if ($actionChoice -eq '9') {
         $recoveryPython = Find-PythonForDownloader -ExecutablePath $script:exePath -FallbackExecutablePath $defaultExe
-        Invoke-RetryFailedTracks -PreviousLogPath $script:resumeFromLog -PythonExe $recoveryPython -LogsDir $logsDir -RunTimestamp $script:timestamp
+        $skipPrimary = -not $script:primaryBackendReady
+        Invoke-RetryFailedTracks -PreviousLogPath $script:resumeFromLog -PythonExe $recoveryPython -LogsDir $logsDir -RunTimestamp $script:timestamp -PrimaryAlreadyTried:$skipPrimary
     } else {
         $script:sourceInventoryRecords = @()
         $script:previousSourceInventory = @()
@@ -2436,7 +2467,7 @@ try {
         }
     }
 
-    if ($hasErrors -and $script:supportsSkipExisting -and -not ($firstPass.Text -match '(?i)playlist-not-found|NotFoundError')) {
+    if ($hasErrors -and $script:primaryBackendReady -and $script:supportsSkipExisting -and -not ($firstPass.Text -match '(?i)playlist-not-found|NotFoundError')) {
         Write-Host ''
         Write-Host 'Возможные ошибки: можно повторить загрузку. Успешно сохранённые файлы должны пропускаться через --skip-existing.' -ForegroundColor Yellow
         if ($script:quality -eq '2') {
