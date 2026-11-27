@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+from types import SimpleNamespace
 import importlib.util
 from pathlib import Path
 from unittest.mock import patch
@@ -60,13 +61,16 @@ def main() -> int:
     assert [track["trackId"] for track in artist_tracks] == ["101", "102", "103"]
     assert artist_api.call_count == 2
 
-    # Exercise the complete source-inventory route, not only the API helper.
-    with patch.object(source_inventory.importlib.util, "spec_from_file_location", wraps=source_inventory.importlib.util.spec_from_file_location):
-        with patch.object(direct_backend, "_fetch_artist", return_value=artist_tracks):
-            with patch.object(direct_backend, "_parse_url", return_value={"type": "artist", "artistId": "123456"}):
-                # The inventory loader loads a fresh module instance from disk;
-                # assert the artist type is routed by the isolated client below.
-                pass
+    fake_direct_client = SimpleNamespace(
+        _parse_url=lambda url: {"type": "artist", "artistId": "123456"},
+        _fetch_artist=lambda artist_id, token: artist_tracks,
+    )
+    complete_artist_records = source_inventory.collect_direct_api_records(
+        fake_direct_client,
+        "https://music.yandex.ru/artist/123456",
+        "test-token",
+    )
+    assert [row["TrackId"] for row in complete_artist_records] == ["101", "102", "103"]
 
     records = [
         {
