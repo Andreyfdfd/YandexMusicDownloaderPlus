@@ -263,6 +263,11 @@ def tracks_for_source_direct_api(source_url, token):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
 
+    return collect_direct_api_records(module, source_url, token)
+
+
+def collect_direct_api_records(module, source_url, token):
+    """Route a URL through the independent API module and normalize its tracks."""
     parsed = module._parse_url(source_url)
     source_type = parsed.get("type")
     if source_type == "track":
