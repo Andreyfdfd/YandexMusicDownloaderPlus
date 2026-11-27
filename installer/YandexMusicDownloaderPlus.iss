@@ -1,5 +1,5 @@
 #define AppName "Yandex Music Downloader Plus"
-#define AppVersion "0.2.0-preview.2"
+#define AppVersion "0.2.0-preview.3"
 #define AppPublisher "Andreyfdfd"
 #ifndef PayloadDir
   #define PayloadDir "..\artifacts\payload"
@@ -52,6 +52,7 @@ Name: "{app}\logs"
 Source: "{#PayloadDir}\YandexMusicDownloader.ps1"; DestDir: "{app}"; Components: core; Flags: ignoreversion
 Source: "{#PayloadDir}\Запустить_загрузку.bat"; DestDir: "{app}"; Components: core; Flags: ignoreversion
 Source: "{#PayloadDir}\tools\source_inventory.py"; DestDir: "{app}\tools"; Components: core; Flags: ignoreversion
+Source: "{#PayloadDir}\tools\backends\*"; DestDir: "{app}\tools\backends"; Components: core; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PayloadDir}\runtime\*"; DestDir: "{app}\runtime"; Components: core; Excludes: "Optional\Lib\site-packages\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PayloadDir}\runtime\Optional\Lib\site-packages\*"; DestDir: "{app}\runtime\Optional\Lib\site-packages"; Components: fallback; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PayloadDir}\README.md"; DestDir: "{app}\docs"; Components: docs; Flags: ignoreversion
