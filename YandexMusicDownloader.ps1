@@ -26,6 +26,7 @@ if (Test-Path -LiteralPath $musicPathConfig -PathType Leaf) {
     }
 }
 $upstreamArchive = 'https://github.com/llistochek/yandex-music-downloader/archive/main.zip'
+$script:guiMode = $env:YMDPLUS_GUI_MODE -eq '1'
 
 $script:exePath = $null
 $script:helpText = ''
@@ -997,12 +998,22 @@ function Ensure-YtDlpBackend([string]$PythonExe) {
 function Initialize-YtDlpRecovery([string]$PythonExe) {
     Write-Host ''
     Write-Host 'Основной загрузчик не смог получить трек. Можно попробовать резервный источник через yt-dlp и авторизованную браузерную сессию.' -ForegroundColor Yellow
-    $enabled = Read-MenuChoice 'Использовать резервный источник для оставшихся неудачных треков? (0 — нет, 1 — да)' @('0','1') '1'
-    if ($enabled -ne '1') { return [pscustomobject]@{ Enabled = $false; Browser = ''; PythonExe = $PythonExe } }
-    Write-Host 'Выбери браузер, в котором Яндекс Музыка открывается с действующей авторизацией:'
-    Write-Host '  1 — Chrome'; Write-Host '  2 — Edge'; Write-Host '  3 — Firefox'; Write-Host '  4 — Brave'
-    $browserChoice = Read-MenuChoice 'Браузер' @('1','2','3','4') '1'
-    $browser = switch ($browserChoice) { '1' { 'chrome' } '2' { 'edge' } '3' { 'firefox' } '4' { 'brave' } }
+    if ($script:guiMode) {
+        $enabled = if ($env:YMDPLUS_GUI_ALLOW_YTDLP -eq '1') { '1' } else { '0' }
+        $browser = [string]$env:YMDPLUS_GUI_BROWSER
+        if (@('chrome','edge','firefox','brave') -notcontains $browser) {
+            Write-Host 'Браузерный резервный способ не разрешён или не выбран в настройках приложения.' -ForegroundColor Gray
+            return [pscustomobject]@{ Enabled = $false; Browser = ''; PythonExe = $PythonExe }
+        }
+        if ($enabled -ne '1') { return [pscustomobject]@{ Enabled = $false; Browser = $browser; PythonExe = $PythonExe } }
+    } else {
+        $enabled = Read-MenuChoice 'Использовать резервный источник для оставшихся неудачных треков? (0 — нет, 1 — да)' @('0','1') '1'
+        if ($enabled -ne '1') { return [pscustomobject]@{ Enabled = $false; Browser = ''; PythonExe = $PythonExe } }
+        Write-Host 'Выбери браузер, в котором Яндекс Музыка открывается с действующей авторизацией:'
+        Write-Host '  1 — Chrome'; Write-Host '  2 — Edge'; Write-Host '  3 — Firefox'; Write-Host '  4 — Brave'
+        $browserChoice = Read-MenuChoice 'Браузер' @('1','2','3','4') '1'
+        $browser = switch ($browserChoice) { '1' { 'chrome' } '2' { 'edge' } '3' { 'firefox' } '4' { 'brave' } }
+    }
     Write-Host 'Проверяю наличие yt-dlp и плагина...' -ForegroundColor Gray
     if (-not (Ensure-YtDlpBackend -PythonExe $PythonExe)) {
         Write-Host 'Установка резервного источника не удалась; продолжу очередь только основным загрузчиком.' -ForegroundColor Yellow
@@ -1694,7 +1705,22 @@ function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
         }
     }
 
-    $cliArgs = @('--token', $script:token, '--quality', $QualityValue, '--url', $script:sourceUrl, '--dir', $script:outputDir)
+    $usesBundledLauncher = $false
+    try {
+        $bundledPath = [System.IO.Path]::GetFullPath($bundledDownloader)
+        $activePath = [System.IO.Path]::GetFullPath($script:exePath)
+        $usesBundledLauncher = [string]::Equals($bundledPath, $activePath, [StringComparison]::OrdinalIgnoreCase)
+    } catch { }
+
+    if ($usesBundledLauncher) {
+        # The native launcher reads the token from this short-lived environment
+        # variable and injects it inside Python, not into the Windows command line.
+        $cliArgs = @('--quality', $QualityValue, '--url', $script:sourceUrl, '--dir', $script:outputDir)
+    } else {
+        # Compatibility path for an external upstream CLI that has not been
+        # wrapped by our launcher yet.
+        $cliArgs = @('--token', $script:token, '--quality', $QualityValue, '--url', $script:sourceUrl, '--dir', $script:outputDir)
+    }
 
     # Это ключевое условие: каждый запуск, включая повторные, пропускает уже имеющиеся файлы.
     if ($script:supportsSkipExisting) { $cliArgs += '--skip-existing' }
@@ -1735,7 +1761,9 @@ function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
     # Continue while collecting the native process output, then restore the
     # wrapper's strict preference immediately.
     $previousErrorActionPreference = $ErrorActionPreference
+    $previousUpstreamToken = $env:YMDPLUS_UPSTREAM_TOKEN
     try {
+        if ($usesBundledLauncher) { $env:YMDPLUS_UPSTREAM_TOKEN = $script:token }
         $ErrorActionPreference = 'Continue'
         & $script:exePath @cliArgs 2>&1 | ForEach-Object {
             $line = [string]$_
@@ -1745,6 +1773,11 @@ function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
         }
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
+        if ($null -eq $previousUpstreamToken) {
+            Remove-Item Env:\YMDPLUS_UPSTREAM_TOKEN -ErrorAction SilentlyContinue
+        } else {
+            $env:YMDPLUS_UPSTREAM_TOKEN = $previousUpstreamToken
+        }
     }
     $exitCode = $LASTEXITCODE
     $afterAudioFiles = Get-AudioFileSnapshot -RootPath $script:outputDir
