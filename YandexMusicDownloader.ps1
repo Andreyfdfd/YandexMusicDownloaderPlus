@@ -27,6 +27,7 @@ if (Test-Path -LiteralPath $musicPathConfig -PathType Leaf) {
 }
 $upstreamArchive = 'https://github.com/llistochek/yandex-music-downloader/archive/main.zip'
 $script:guiMode = $env:YMDPLUS_GUI_MODE -eq '1'
+$script:guiExitCode = 0
 
 $script:exePath = $null
 $script:helpText = ''
@@ -2075,25 +2076,37 @@ $env:PYTHONIOENCODING = 'utf-8'
 # a buffer and appear only after the whole pass has finished.
 $env:PYTHONUNBUFFERED = '1'
 
-Clear-Host
-Write-Host '====================================================' -ForegroundColor Cyan
-Write-Host '   Яндекс Музыка — Downloader Plus' -ForegroundColor Cyan
-Write-Host '====================================================' -ForegroundColor Cyan
-Write-Host 'Токен вводится скрыто; сохранение использует Windows DPAPI и не требует модуля Microsoft.PowerShell.Security.' -ForegroundColor Gray
-Write-Host ''
-Write-Host 'Режим:'
-Write-Host '  1 — скачать музыку (обычный режим)'
-Write-Host '  2 — обновить загрузчик и выйти'
-Write-Host '  3 — обновить загрузчик и затем начать скачивание'
-Write-Host '  4 — попробовать резервный источник для одного проблемного трека (yt-dlp + сессия браузера)'
-Write-Host '  5 — создать отчёт по недоступным трекам из существующего лога (без скачивания)'
-Write-Host '  6 — проверить расшифровку сохранённого токена (без загрузки и без вывода токена)'
-Write-Host '  7 — проверить шифрование и повторную расшифровку токена (без сети и без изменения сохранённого файла)'
-Write-Host '  8 — повторить незавершённую загрузку по предыдущему логу'
-Write-Host '  9 — восстановить неудачные треки (основной CLI → API-клиент → yt-dlp)'
-Write-Host ' 10 — экспортировать список треков без скачивания аудио (CSV / JSON / TXT / XML)'
-Write-Host '  0 — выход'
-$actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5','6','7','8','9','10') '1'
+if ($script:guiMode) {
+    $guiAction = [string]$env:YMDPLUS_GUI_ACTION
+    $actionChoice = switch ($guiAction.ToLowerInvariant()) {
+        'download' { '1' }
+        'export' { '10' }
+        'retry' { '9' }
+        default { throw "Неизвестный режим графического приложения: $guiAction" }
+    }
+    Write-Host 'Downloader Plus — графический запуск' -ForegroundColor Cyan
+    Write-Host "Действие: $guiAction" -ForegroundColor Gray
+} else {
+    Clear-Host
+    Write-Host '====================================================' -ForegroundColor Cyan
+    Write-Host '   Яндекс Музыка — Downloader Plus' -ForegroundColor Cyan
+    Write-Host '====================================================' -ForegroundColor Cyan
+    Write-Host 'Токен вводится скрыто; сохранение использует Windows DPAPI и не требует модуля Microsoft.PowerShell.Security.' -ForegroundColor Gray
+    Write-Host ''
+    Write-Host 'Режим:'
+    Write-Host '  1 — скачать музыку (обычный режим)'
+    Write-Host '  2 — обновить загрузчик и выйти'
+    Write-Host '  3 — обновить загрузчик и затем начать скачивание'
+    Write-Host '  4 — попробовать резервный источник для одного проблемного трека (yt-dlp + сессия браузера)'
+    Write-Host '  5 — создать отчёт по недоступным трекам из существующего лога (без скачивания)'
+    Write-Host '  6 — проверить расшифровку сохранённого токена (без загрузки и без вывода токена)'
+    Write-Host '  7 — проверить шифрование и повторную расшифровку токена (без сети и без изменения сохранённого файла)'
+    Write-Host '  8 — повторить незавершённую загрузку по предыдущему логу'
+    Write-Host '  9 — восстановить неудачные треки (основной CLI → API-клиент → yt-dlp)'
+    Write-Host ' 10 — экспортировать список треков без скачивания аудио (CSV / JSON / TXT / XML)'
+    Write-Host '  0 — выход'
+    $actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5','6','7','8','9','10') '1'
+}
 if ($actionChoice -eq '0') { exit 0 }
 if ($actionChoice -eq '4') {
     Invoke-AlternativeTrack
@@ -2116,10 +2129,18 @@ if ($actionChoice -eq '7') {
     exit 0
 }
 if ($actionChoice -eq '8' -or $actionChoice -eq '9') {
-    $script:resumeSettings = Select-PreviousDownloadLog
+    if ($script:guiMode) {
+        $providedLogPath = [string]$env:YMDPLUS_GUI_LOG_PATH
+        if ([string]::IsNullOrWhiteSpace($providedLogPath) -or -not (Test-Path -LiteralPath $providedLogPath -PathType Leaf)) {
+            throw 'Графическое приложение не передало существующий журнал предыдущего запуска.'
+        }
+        $script:resumeSettings = Get-PreviousDownloadSettings -LogPath $providedLogPath
+    } else {
+        $script:resumeSettings = Select-PreviousDownloadLog
+    }
     if ($null -eq $script:resumeSettings) {
-        Read-Host 'Не удалось выбрать подходящий лог. Нажми Enter для выхода' | Out-Null
-        exit 1
+        if (-not $script:guiMode) { Read-Host 'Не удалось выбрать подходящий лог. Нажми Enter для выхода' | Out-Null }
+        throw 'Не удалось получить параметры предыдущего запуска из журнала.'
     }
     $script:resumeFromLog = $script:resumeSettings.LogPath
     Write-Host ''
@@ -2134,8 +2155,10 @@ if ($actionChoice -eq '8' -or $actionChoice -eq '9') {
     Write-Host "Ссылка: $($script:resumeSettings.Url)"
     Write-Host "Папка:  $($script:resumeSettings.OutputDir)"
     Write-Host "Качество по умолчанию: $($script:resumeSettings.FormatName)"
-    $confirmed = Read-MenuChoice 'Продолжить? (0 — отмена, 1 — да)' @('0','1') '1'
-    if ($confirmed -ne '1') { exit 0 }
+    if (-not $script:guiMode) {
+        $confirmed = Read-MenuChoice 'Продолжить? (0 — отмена, 1 — да)' @('0','1') '1'
+        if ($confirmed -ne '1') { exit 0 }
+    }
 }
 
 $script:exePath = $null
@@ -2223,6 +2246,17 @@ if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings) 
     $script:sourceUrl = $script:resumeSettings.Url
     $script:outputDir = $script:resumeSettings.OutputDir
     Write-Host 'Для выбранного режима используются ссылка и папка из лога.' -ForegroundColor Gray
+} elseif ($script:guiMode) {
+    if (@('1','3','10') -contains $actionChoice) {
+        $script:sourceUrl = ([string]$env:YMDPLUS_GUI_SOURCE_URL).Trim()
+        if ([string]::IsNullOrWhiteSpace($script:sourceUrl)) { throw 'Не указана ссылка на плейлист, альбом, исполнителя или трек.' }
+    }
+    $guiOutputDir = [string]$env:YMDPLUS_GUI_OUTPUT_DIR
+    if ([string]::IsNullOrWhiteSpace($guiOutputDir)) {
+        if ($actionChoice -eq '10') { $guiOutputDir = Join-Path (Join-Path $env:USERPROFILE 'Documents') 'YandexMusicBackups' }
+        else { $guiOutputDir = $defaultDir }
+    }
+    $script:outputDir = $guiOutputDir.Trim()
 } else {
     if (@('1','3','10') -contains $actionChoice) {
         if ([string]::IsNullOrWhiteSpace($defaultUrl)) {
