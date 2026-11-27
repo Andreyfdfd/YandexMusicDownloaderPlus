@@ -990,12 +990,18 @@ function Invoke-YtDlpRecoveryTrack([object]$Candidate, [string]$PythonExe, [stri
     $outputPattern = Join-Path $trackStage 'track.%(ext)s'
     $args = @('-m','yt_dlp','--cookies-from-browser',$Browser,'--no-playlist','--no-overwrites','--embed-metadata','--embed-thumbnail','--output',$outputPattern,[string]$Candidate.TrackUrl)
     Write-Host "  Резервный источник: $($Candidate.TrackTitle)" -ForegroundColor DarkCyan
-    & $PythonExe @args 2>&1 | ForEach-Object {
-        $line = [string]$_
-        Write-Host $line
-        if (-not [string]::IsNullOrWhiteSpace($script:logPath)) { Add-Content -LiteralPath $script:logPath -Value $line -Encoding UTF8 }
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $PythonExe @args 2>&1 | ForEach-Object {
+            $line = [string]$_
+            Write-Host $line
+            if (-not [string]::IsNullOrWhiteSpace($script:logPath)) { Add-Content -LiteralPath $script:logPath -Value $line -Encoding UTF8 }
+        }
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousPreference
     }
-    $exitCode = $LASTEXITCODE
     $files = @(Get-ChildItem -LiteralPath $trackStage -File -ErrorAction SilentlyContinue |
         Where-Object { @('.m4a','.mp3','.flac') -contains $_.Extension.ToLowerInvariant() })
     if ($files.Count -eq 0) {
@@ -1028,7 +1034,7 @@ function Invoke-YtDlpRecoveryTrack([object]$Candidate, [string]$PythonExe, [stri
 function Test-NonRecoverableServiceFailure([string]$Details) {
     if ([string]::IsNullOrWhiteSpace($Details)) { return $false }
     # Do not rotate downloaders to override service-side or account-side denials.
-    return $Details -match '(?i)(не доступен для скачивания|недоступен для скачивания|playlist-not-found|not-found|not-allowed|HTTP\\s*(401|403|404|429)|\\b(401|403|404|429)\\b|unauthori[sz]ed|forbidden|rate.?limit|too many requests|quota exceeded|subscription required|region restricted|DRM|smart_preview)'
+    return $Details -match '(?i)(не доступен для скачивания|недоступен для скачивания|playlist-not-found|not-found|not-allowed|HTTP\s*(401|403|404|429)|\b(401|403|404|429)\b|unauthori[sz]ed|forbidden|rate.?limit|too many requests|quota exceeded|subscription required|region restricted|DRM|smart_preview)'
 }
 
 function Invoke-DirectApiRecoveryTrack([object]$Candidate, [string]$PythonExe, [string]$StagingRoot) {
@@ -1190,6 +1196,7 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
     }
 
     $stagingRoot = Join-Path (Split-Path -Parent $script:outputDir) ("{0}._DownloaderPlus_RecoveryStaging_{1}" -f (Split-Path -Leaf $script:outputDir), $RunTimestamp)
+    New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
     $fallback = $null
     $fallbackInitialized = $false
     $results = New-Object 'System.Collections.Generic.List[object]'
