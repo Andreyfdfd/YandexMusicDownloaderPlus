@@ -27,13 +27,13 @@
                         <TextBlock Text="♫" FontSize="26" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
                     <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
-                        <TextBlock Text="DOWNLOADER" FontSize="13" FontWeight="Bold" LetterSpacing="1"/>
-                        <TextBlock Text="PLUS" FontSize="11" Foreground="{StaticResource MutedBrush}" CharacterSpacing="2"/>
+                        <TextBlock Text="DOWNLOADER" FontSize="13" FontWeight="Bold"/>
+                        <TextBlock Text="PLUS" FontSize="11" Foreground="{StaticResource MutedBrush}"/>
                     </StackPanel>
                 </StackPanel>
 
                 <TextBlock Grid.Row="2" Text="РАБОЧЕЕ ПРОСТРАНСТВО"
-                           FontSize="10" CharacterSpacing="1.5" Foreground="#64748B"
+                           FontSize="10" Foreground="#64748B"
                            Margin="5,0,0,10"/>
 
                 <StackPanel Grid.Row="3">
