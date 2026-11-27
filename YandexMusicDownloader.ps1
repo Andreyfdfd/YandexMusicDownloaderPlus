@@ -1055,7 +1055,7 @@ function Test-NonRecoverableServiceFailure([string]$Details) {
 }
 
 function Invoke-DirectApiRecoveryTrack([object]$Candidate, [string]$PythonExe, [string]$StagingRoot) {
-    $backendScript = Join-Path (Join-Path $scriptRoot 'tools') 'backends\\yandex_music_cli.py'
+    $backendScript = Join-Path (Join-Path $scriptRoot 'tools') 'backends\yandex_music_cli.py'
     if (-not (Test-Path -LiteralPath $backendScript -PathType Leaf)) {
         return [pscustomobject]@{ Success = $false; Path = ''; Details = "Файл второго backend не найден: $backendScript" }
     }
