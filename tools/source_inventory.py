@@ -201,11 +201,10 @@ def run_inventory(args):
     )
 
 
-def run_export(args):
-    records = collect_inventory(args.url, args.delay)
-    output_dir = Path(args.output_dir)
+def write_export_files(source_url, output_dir, prefix, records):
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    prefix = args.prefix.strip() or "yandex-music-backup"
+    prefix = prefix.strip() or "yandex-music-backup"
     csv_path = output_dir / f"{prefix}.csv"
     json_path = output_dir / f"{prefix}.json"
     txt_path = output_dir / f"{prefix}.txt"
@@ -247,20 +246,18 @@ def run_export(args):
         "format": "YandexMusicDownloaderPlusLibraryBackup",
         "formatVersion": 1,
         "platform": "Yandex Music",
-        "sourceUrl": args.url,
+        "sourceUrl": source_url,
         "exportedAtUtc": exported_at,
         "trackCount": len(records),
         "tracks": records,
     }
     json_path.write_text(json.dumps(backup, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    txt_path.write_text(
-        "".join(
-            f"{(row.get('Artists') or 'Unknown Artist')} - {(row.get('Title') or row.get('TrackTitle') or 'Unknown Title')}\\n"
-            for row in records
-        ),
-        encoding="utf-8-sig",
-    )
+    text_lines = [
+        f"{row.get('Artists') or 'Unknown Artist'} - {row.get('Title') or row.get('TrackTitle') or 'Unknown Title'}"
+        for row in records
+    ]
+    txt_path.write_text("\\n".join(text_lines) + ("\\n" if text_lines else ""), encoding="utf-8-sig")
 
     root = ET.Element("playlist", {"title": prefix})
     for row in records:
@@ -276,7 +273,7 @@ def run_export(args):
     ET.indent(root, space="  ")
     ET.ElementTree(root).write(xml_path, encoding="utf-8", xml_declaration=True)
 
-    manifest = {
+    return {
         "success": True,
         "count": len(records),
         "files": {
@@ -286,8 +283,12 @@ def run_export(args):
             "xml": str(xml_path),
         },
     }
-    print(json.dumps(manifest, ensure_ascii=False))
 
+
+def run_export(args):
+    records = collect_inventory(args.url, args.delay)
+    manifest = write_export_files(args.url, args.output_dir, args.prefix, records)
+    print(json.dumps(manifest, ensure_ascii=False))
 
 def run_duration(args):
     from mutagen import File as MutagenFile
