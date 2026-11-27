@@ -28,7 +28,7 @@ def main() -> int:
         {
             "SourceIndex": 1, "TrackId": "123", "TrackKey": "123:456",
             "TrackTitle": "Космическая музыка — Remaster", "Title": "Космическая музыка",
-            "Version": "Remaster", "TrackLabel": "Группа, Исполнитель - Космическая музыка",
+            "Version": "Remaster", "TrackLabel": "Группа, Исполнитель - Космическая музыка — Remaster",
             "Artists": "Группа, Исполнитель", "AlbumTitle": "Альбом, Vol. 1",
             "AlbumArtist": "Группа", "AlbumId": "456", "Year": "2024",
             "ISRC": "RUA1A2400001", "TrackNumber": "7", "DiscNumber": "1",
@@ -84,7 +84,7 @@ def main() -> int:
         with csv_path.open("r", encoding="utf-8-sig", newline="") as stream:
             csv_rows = list(csv.DictReader(stream))
         assert len(csv_rows) == 2
-        assert csv_rows[0]["title"] == "Космическая музыка"
+        assert csv_rows[0]["title"] == "Космическая музыка — Remaster"
         assert csv_rows[0]["artist"] == "Группа, Исполнитель"
         assert csv_rows[0]["isrc"] == "RUA1A2400001"
         assert csv_rows[0]["trackId"] == "123"
@@ -105,7 +105,7 @@ def main() -> int:
         xml_root = ET.parse(manifest["files"]["xml"]).getroot()
         xml_tracks = xml_root.findall("track")
         assert len(xml_tracks) == 2
-        assert xml_tracks[0].findtext("title") == "Космическая музыка"
+        assert xml_tracks[0].findtext("title") == "Космическая музыка — Remaster"
         assert xml_tracks[0].findtext("artist") == "Группа, Исполнитель"
         assert xml_tracks[0].findtext("isrc") == "RUA1A2400001"
 
