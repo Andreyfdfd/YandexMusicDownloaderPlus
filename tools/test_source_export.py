@@ -41,6 +41,33 @@ def main() -> int:
         "type": "artist",
         "artistId": "123456",
     }
+    assert direct_backend._parse_url("https://music.yandex.ru/artist/123456/tracks") == {
+        "type": "artist",
+        "artistId": "123456",
+    }
+    assert direct_backend._parse_url("https://music.yandex.ru/album/901") == {
+        "type": "album",
+        "albumId": "901",
+    }
+    assert direct_backend._parse_url("https://music.yandex.ru/album/901/track/902") == {
+        "type": "track",
+        "albumId": "901",
+        "trackId": "902",
+    }
+    assert direct_backend._parse_url("https://music.yandex.ru/podcast/71/episode/72") == {
+        "type": "track",
+        "albumId": "71",
+        "trackId": "72",
+    }
+    assert direct_backend._parse_url("https://music.yandex.ru/podcast/71") == {
+        "type": "album",
+        "albumId": "71",
+    }
+    assert direct_backend._parse_url("https://music.yandex.ru/users/test/playlists/3") == {
+        "type": "playlist",
+        "owner": "test",
+        "kinds": "3",
+    }
     artist_pages = [
         {
             "tracks": [
