@@ -178,7 +178,7 @@ def track_record(track, index):
 
 
 def _safe_path_segment(value):
-    segment = re.sub(r'[<>:"/\\\\|?*\\x00-\\x1f]', "_", str(value or "")).strip().rstrip(". ")
+    segment = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(value or "")).strip().rstrip(". ")
     return segment[:180] or "Unknown"
 
 
@@ -225,7 +225,7 @@ def direct_api_track_record(track, index):
         "DiscNumber": str(disc_number) if disc_number else "",
         "Available": "",
         "TrackUrl": track_url,
-        "RelativeBasePath": str(relative_base).replace("\\\\", "/"),
+        "RelativeBasePath": str(relative_base).replace("\\", "/"),
         "DurationMs": duration_ms,
         "DurationSeconds": round(duration_ms / 1000.0, 3) if duration_ms else "",
     }
