@@ -518,6 +518,43 @@ function Invoke-SourceInventory([string]$SourceUrl, [string]$PythonExe, [string]
     }
 }
 
+function Invoke-PlaylistMetadataExport([string]$SourceUrl, [string]$PythonExe, [string]$OutputDir, [string]$Prefix, [string]$DelaySeconds = '0') {
+    $helperPath = Join-Path (Join-Path $scriptRoot 'tools') 'source_inventory.py'
+    if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {
+        return [pscustomobject]@{ Success = $false; Error = "Не найден файл экспорта: $helperPath"; Files = $null; Count = 0 }
+    }
+    if ([string]::IsNullOrWhiteSpace($PythonExe) -or -not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
+        return [pscustomobject]@{ Success = $false; Error = 'Не найден встроенный Python для экспорта библиотеки.'; Files = $null; Count = 0 }
+    }
+
+    $previousToken = $env:YMDPLUS_INVENTORY_TOKEN
+    $env:YMDPLUS_INVENTORY_TOKEN = $script:token
+    try {
+        $rawOutput = (& $PythonExe $helperPath export --url $SourceUrl --output-dir $OutputDir --prefix $Prefix --delay $DelaySeconds 2>&1 | Out-String).Trim()
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            return [pscustomobject]@{ Success = $false; Error = "Экспортёр завершился с кодом $exitCode. $rawOutput"; Files = $null; Count = 0 }
+        }
+        try {
+            $payload = $rawOutput | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            return [pscustomobject]@{ Success = $false; Error = "Не удалось разобрать результат экспорта: $($_.Exception.Message). Вывод: $rawOutput"; Files = $null; Count = 0 }
+        }
+        if (-not $payload.success -or [int]$payload.count -le 0) {
+            return [pscustomobject]@{ Success = $false; Error = 'Источник не вернул ни одной композиции для экспорта.'; Files = $payload.files; Count = [int]$payload.count }
+        }
+        return [pscustomobject]@{ Success = $true; Error = ''; Files = $payload.files; Count = [int]$payload.count }
+    } catch {
+        return [pscustomobject]@{ Success = $false; Error = $_.Exception.Message; Files = $null; Count = 0 }
+    } finally {
+        if ($null -eq $previousToken) {
+            Remove-Item Env:\YMDPLUS_INVENTORY_TOKEN -ErrorAction SilentlyContinue
+        } else {
+            $env:YMDPLUS_INVENTORY_TOKEN = $previousToken
+        }
+    }
+}
+
 function Get-NormalizedAudioBasePath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
     try { $fullPath = [System.IO.Path]::GetFullPath($Path) } catch { $fullPath = $Path }
@@ -1794,8 +1831,9 @@ Write-Host '  6 — проверить расшифровку сохранённ
 Write-Host '  7 — проверить шифрование и повторную расшифровку токена (без сети и без изменения сохранённого файла)'
 Write-Host '  8 — повторить незавершённую загрузку по предыдущему логу'
 Write-Host '  9 — восстановить все неудачные треки по очереди (основной загрузчик → резервный источник)'
+Write-Host ' 10 — экспортировать список треков без скачивания аудио (CSV / JSON / TXT / XML)'
 Write-Host '  0 — выход'
-$actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5','6','7','8','9') '1'
+$actionChoice = Read-MenuChoice 'Выбор' @('0','1','2','3','4','5','6','7','8','9','10') '1'
 if ($actionChoice -eq '0') { exit 0 }
 if ($actionChoice -eq '4') {
     Invoke-AlternativeTrack
@@ -1886,7 +1924,7 @@ if (-not $supportsSkipExisting) {
     Read-Host 'Нажми Enter для выхода' | Out-Null
     exit 2
 }
-if (-not ($supportsQuality -and $supportsUrl -and $supportsToken -and $supportsDir)) {
+if ($actionChoice -ne '10' -and -not ($supportsQuality -and $supportsUrl -and $supportsToken -and $supportsDir)) {
     Write-Host 'Установленная версия не поддерживает необходимые параметры --quality, --url, --token и/или --dir.' -ForegroundColor Red
     Write-Host 'Обнови загрузчик через пункт 2 и попробуй снова.' -ForegroundColor Yellow
     Read-Host 'Нажми Enter для выхода' | Out-Null
@@ -1899,7 +1937,7 @@ if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings) 
     $script:outputDir = $script:resumeSettings.OutputDir
     Write-Host 'Для выбранного режима используются ссылка и папка из лога.' -ForegroundColor Gray
 } else {
-    if (@('1','3') -contains $actionChoice) {
+    if (@('1','3','10') -contains $actionChoice) {
         if ([string]::IsNullOrWhiteSpace($defaultUrl)) {
             $sourceUrl = Read-Host 'Ссылка на плейлист/альбом/исполнителя/отдельный трек (обязательно)'
             while ([string]::IsNullOrWhiteSpace($sourceUrl)) {
@@ -1912,9 +1950,15 @@ if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings) 
         }
         $script:sourceUrl = $sourceUrl
     }
-    $script:outputDir = Read-DefaultText 'Папка для сохранения' $defaultDir
+    if ($actionChoice -eq '10') {
+        $defaultExportDir = Join-Path (Join-Path $env:USERPROFILE 'Documents') 'YandexMusicBackups'
+        $script:outputDir = Read-DefaultText 'Папка для файлов резервной копии' $defaultExportDir
+    } else {
+        $script:outputDir = Read-DefaultText 'Папка для сохранения' $defaultDir
+    }
 }
 
+if ($actionChoice -ne '10') {
 Write-Host ''
 Write-Host 'Выбор качества/формата:' -ForegroundColor Cyan
 if ($script:supportsForceMp3) {
@@ -1959,10 +2003,11 @@ if ($script:supportsLyrics) {
 }
 
 $script:delay = '0'
-if ($script:supportsDelay) {
+if ($script:supportsDelay -or $actionChoice -eq '10') {
     Write-Host ''
     Write-Host 'Задержка между запросами: 0 — быстрее; 1 — осторожнее при ограничениях API.'
     $script:delay = Read-MenuChoice 'Задержка в секундах' @('0','1') '0'
+}
 }
 
 # Persistent token storage: Windows DPAPI, bound to the current Windows user profile.
@@ -2037,6 +2082,44 @@ $tokenPtr = [IntPtr]::Zero
 try {
     $tokenPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
     $script:token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($tokenPtr)
+
+    if ($actionChoice -eq '10') {
+        $exportDir = [System.IO.Path]::GetFullPath($script:outputDir)
+        New-Item -ItemType Directory -Path $exportDir -Force -ErrorAction Stop | Out-Null
+        $exportTimestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $sourceId = ([uri]$script:sourceUrl).AbsolutePath.Trim('/') -replace '[^A-Za-z0-9_-]+', '-'
+        if ([string]::IsNullOrWhiteSpace($sourceId)) { $sourceId = 'playlist' }
+        $exportPrefix = "yandex-$sourceId-$exportTimestamp"
+        $script:logPath = Join-Path $exportDir "$exportPrefix-export.log"
+        @(
+            "Экспорт библиотеки: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+            "Источник: $($script:sourceUrl)"
+            "Файлы сохраняются в: $exportDir"
+            'Аудиоданные не загружаются.'
+            'Токен не записывается в журнал.'
+        ) | Out-File -FilePath $script:logPath -Encoding utf8
+
+        $exportPython = Find-PythonForDownloader -ExecutablePath $script:exePath -FallbackExecutablePath $defaultExe
+        Write-Host ''
+        Write-Host 'Экспортирую список композиций. Аудиофайлы скачиваться не будут...' -ForegroundColor Cyan
+        $exportResult = Invoke-PlaylistMetadataExport -SourceUrl $script:sourceUrl -PythonExe $exportPython -OutputDir $exportDir -Prefix $exportPrefix -DelaySeconds $script:delay
+        if (-not $exportResult.Success) {
+            "Ошибка экспорта: $($exportResult.Error)" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+            throw "Не удалось экспортировать библиотеку: $($exportResult.Error)"
+        }
+
+        "Экспортировано композиций: $($exportResult.Count)" | Out-File -FilePath $script:logPath -Encoding utf8 -Append
+        Write-Host ''
+        Write-Host "Экспортировано композиций: $($exportResult.Count)" -ForegroundColor Green
+        Write-Host 'Созданы файлы:' -ForegroundColor Cyan
+        Write-Host "  CSV для Soundiiz и таблиц: $($exportResult.Files.csv)"
+        Write-Host "  Полная резервная копия JSON: $($exportResult.Files.json)"
+        Write-Host "  Простой текстовый список: $($exportResult.Files.txt)"
+        Write-Host "  XML для совместимого импорта: $($exportResult.Files.xml)"
+        Write-Host "Журнал: $($script:logPath)" -ForegroundColor DarkGray
+        Read-Host 'Нажми Enter для выхода' | Out-Null
+        exit 0
+    }
 
     if (-not (Test-Path -LiteralPath $script:outputDir -PathType Container)) {
         New-Item -ItemType Directory -Path $script:outputDir -Force | Out-Null
