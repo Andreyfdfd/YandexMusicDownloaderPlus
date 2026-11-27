@@ -2114,6 +2114,7 @@ if ($script:guiMode) {
         'download' { '1' }
         'export' { '10' }
         'retry' { '9' }
+        'update' { '2' }
         default { throw "Неизвестный режим графического приложения: $guiAction" }
     }
     Write-Host 'Downloader Plus — графический запуск' -ForegroundColor Cyan
@@ -2216,12 +2217,12 @@ if ($actionChoice -ne '10') {
         $updated = Update-Downloader -ExecutablePath $script:exePath
         if (-not $updated) {
             if ($actionChoice -eq '2') {
-                Read-Host 'Обновление не удалось. Нажми Enter для выхода' | Out-Null
+                if (-not $script:guiMode) { Read-Host 'Обновление не удалось. Нажми Enter для выхода' | Out-Null }
                 exit 1
             }
             Write-Host 'Обновление не удалось. Продолжаю с уже установленным backend, если он доступен; иначе включится резервная цепочка.' -ForegroundColor Yellow
         } elseif ($actionChoice -eq '2') {
-            Read-Host 'Обновление завершено. Нажми Enter для выхода' | Out-Null
+            if (-not $script:guiMode) { Read-Host 'Обновление завершено. Нажми Enter для выхода' | Out-Null }
             exit 0
         }
         $script:exePath = Find-Downloader -PreferredPath $defaultExe
