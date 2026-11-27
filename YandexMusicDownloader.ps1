@@ -1119,7 +1119,7 @@ function Invoke-DirectApiRecoveryTrack([object]$Candidate, [string]$PythonExe, [
     }
 }
 
-function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, [string]$LogsDir, [string]$RunTimestamp) {
+function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, [string]$LogsDir, [string]$RunTimestamp, [switch]$Automatic, [switch]$PrimaryAlreadyTried) {
     $queueResult = Get-RetryQueueFromLog -PreviousLogPath $PreviousLogPath -OutputDir $script:outputDir -PythonExe $PythonExe -LogsDir $LogsDir -DelaySeconds $script:delay
     if ($queueResult.Queue.Count -eq 0) {
         if ($queueResult.ReusedRecoveryQueue) {
@@ -1133,7 +1133,11 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
         }
         return
     }
-    $queue = @($queueResult.Queue)
+    $queue = @($queueResult.Queue | Where-Object { -not (Test-NonRecoverableServiceFailure -Details ([string]$_.Details)) })
+    if ($queue.Count -eq 0) {
+        Write-Host 'Очередь содержит только недоступные, удалённые или запрещённые сервисом позиции. Другие backend’ы для обхода этих ограничений запускаться не будут.' -ForegroundColor Yellow
+        return
+    }
     $queuePath = Join-Path $LogsDir "retry-queue-$RunTimestamp.csv"
     $queue | Export-Csv -LiteralPath $queuePath -NoTypeInformation -Encoding UTF8
     Write-Host ''
@@ -1153,10 +1157,15 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
     if ($zeroCandidates.Count -gt 0) {
         $zeroDistinct = @($zeroCandidates | Group-Object TrackKey | ForEach-Object { $_.Group[0] })
         Write-Host ("Для {0} проблемных треков найдены файлы нулевого размера; загрузчик может пропустить их из-за --skip-existing." -f $zeroDistinct.Count) -ForegroundColor Yellow
-        $moveZero = Read-MenuChoice '0 — оставить; 1 — переместить эти файлы в карантин и повторить загрузку' @('0','1') '0'
-        if ($moveZero -eq '1') {
+        if ($Automatic) {
             $movedZero = Move-CandidateFilesToQuarantine -Queue $zeroDistinct -RootPath $script:outputDir -OnlyZeroLength $true
-            Write-Host "Перемещено в карантин: $($movedZero.Moved). Папка: $($movedZero.Path)" -ForegroundColor Green
+            Write-Host "Нулевые файлы безопасно перемещены в карантин (не удалены): $($movedZero.Moved). Папка: $($movedZero.Path)" -ForegroundColor Green
+        } else {
+            $moveZero = Read-MenuChoice '0 — оставить; 1 — переместить эти файлы в карантин и повторить загрузку' @('0','1') '0'
+            if ($moveZero -eq '1') {
+                $movedZero = Move-CandidateFilesToQuarantine -Queue $zeroDistinct -RootPath $script:outputDir -OnlyZeroLength $true
+                Write-Host "Перемещено в карантин: $($movedZero.Moved). Папка: $($movedZero.Path)" -ForegroundColor Green
+            }
         }
     }
 
@@ -1169,10 +1178,14 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
     if ($existingCandidates.Count -gt 0) {
         $existingDistinct = @($existingCandidates | Group-Object TrackKey | ForEach-Object { $_.Group[0] })
         Write-Host ("У {0} кандидатов всё ещё есть локальный аудиофайл. Он может быть полноценным, а может быть частичным." -f $existingDistinct.Count) -ForegroundColor Yellow
-        $moveExisting = Read-MenuChoice '0 — сохранить и пропустить; 1 — перенести эти файлы в карантин и попытаться скачать заново' @('0','1') '0'
-        if ($moveExisting -eq '1') {
-            $movedExisting = Move-CandidateFilesToQuarantine -Queue $existingDistinct -RootPath $script:outputDir
-            Write-Host "Перемещено файлов в карантин: $($movedExisting.Moved). Папка: $($movedExisting.Path)" -ForegroundColor Green
+        if ($Automatic) {
+            Write-Host 'Автоматическое восстановление не будет перезаписывать ненулевые файлы; они останутся на месте для проверки.' -ForegroundColor Gray
+        } else {
+            $moveExisting = Read-MenuChoice '0 — сохранить и пропустить; 1 — перенести эти файлы в карантин и попытаться скачать заново' @('0','1') '0'
+            if ($moveExisting -eq '1') {
+                $movedExisting = Move-CandidateFilesToQuarantine -Queue $existingDistinct -RootPath $script:outputDir
+                Write-Host "Перемещено файлов в карантин: $($movedExisting.Moved). Папка: $($movedExisting.Path)" -ForegroundColor Green
+            }
         }
     }
 
@@ -1195,7 +1208,10 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
 
         $script:sourceUrl = [string]$candidate.TrackUrl
         $beforeFiles = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath) | ForEach-Object { $_.FullName.ToLowerInvariant() })
-        $pass = Invoke-DownloadPass -PassName ("ВОССТАНОВЛЕНИЕ {0:D3} — ОСНОВНОЙ" -f ($i + 1)) -QualityValue $script:quality
+        $pass = $null
+        if (-not $PrimaryAlreadyTried) {
+            $pass = Invoke-DownloadPass -PassName ("ВОССТАНОВЛЕНИЕ {0:D3} — ОСНОВНОЙ" -f ($i + 1)) -QualityValue $script:quality
+        }
         $afterFiles = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
         $newZeroFiles = @($afterFiles | Where-Object { $beforeFiles -notcontains $_.FullName.ToLowerInvariant() -and $_.Length -eq 0 })
         if ($newZeroFiles.Count -gt 0) {
@@ -1241,6 +1257,26 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
             continue
         }
 
+        $directDetails = ''
+        try {
+            Write-Host '  Пробую второй backend: независимый клиент API Яндекс Музыки...' -ForegroundColor DarkCyan
+            $direct = Invoke-DirectApiRecoveryTrack -Candidate $candidate -PythonExe $PythonExe -StagingRoot $stagingRoot
+            if ($direct.Success) {
+                [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = 'Успешно восстановлен'; Method = 'Независимый API backend'; Path = $direct.Path; Details = $direct.Details })
+                Write-Host $direct.Details -ForegroundColor Green
+                continue
+            }
+            $directDetails = [string]$direct.Details
+        } catch {
+            $directDetails = $_.Exception.Message
+        }
+
+        if (Test-NonRecoverableServiceFailure -Details $directDetails) {
+            [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = 'Не повторялся: отказ сервиса/ограничение доступа'; Method = 'Независимый API backend'; Path = ''; Details = $directDetails })
+            Write-Host "Сервис отклонил запрос; другие методы для этого трека не запускаются: $directDetails" -ForegroundColor Yellow
+            continue
+        }
+
         if (-not $fallbackInitialized) {
             $fallback = Initialize-YtDlpRecovery -PythonExe $PythonExe
             $fallbackInitialized = $true
@@ -1262,7 +1298,8 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
         } else {
             $alternateDetails = 'Резервный источник не был включён или не удалось установить yt-dlp.'
         }
-        [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = 'Не удалось восстановить'; Method = 'Основной + резервный'; Path = ''; Details = "$alternateDetails; причина первой неудачи: $($pass.Text -join ' ')" })
+        $primaryDetails = if ($null -ne $pass) { ($pass.Text -join ' ') } else { [string]$candidate.Details }
+        [void]$results.Add([pscustomobject]@{ TrackId = $candidate.TrackId; TrackKey = $candidate.TrackKey; Track = $candidate.TrackTitle; Status = 'Не удалось восстановить'; Method = 'Основной + API + yt-dlp'; Path = ''; Details = "$alternateDetails; второй backend: $directDetails; причина первичной неудачи: $primaryDetails" })
         Write-Host "Не удалось восстановить: $($candidate.TrackTitle)" -ForegroundColor Red
     }
 
