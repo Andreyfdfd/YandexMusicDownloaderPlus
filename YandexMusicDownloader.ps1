@@ -1136,11 +1136,14 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
         $primaryLogText = Get-Content -LiteralPath $PreviousLogPath -Raw -ErrorAction SilentlyContinue
         if (-not (Test-NonRecoverableServiceFailure -Details $primaryLogText)) {
             $globalReason = 'Основной backend завершился с ошибкой до создания отчёта по отдельным файлам.'
+            $inventoryQueue = New-Object 'System.Collections.Generic.List[object]'
+            $inventorySeen = @{}
             foreach ($record in @($script:sourceInventoryRecords)) {
                 $present = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$record.RelativeBasePath))
                 if ($present.Count -gt 0 -and @($present | Where-Object { $_.Length -gt 0 }).Count -gt 0) { continue }
-                Add-RetryCandidate -Queue ([ref]$queue) -Seen @{} -TrackRecord $record -Details $globalReason
+                Add-RetryCandidate -Queue $inventoryQueue -Seen $inventorySeen -TrackRecord $record -Details $globalReason
             }
+            $queue = @($inventoryQueue.ToArray())
         }
     }
 
