@@ -37,6 +37,12 @@ namespace DownloaderPlus
                     {
                         if (File.Exists(probe)) File.Delete(probe);
                     }
+
+                    // Load the full WPF window and all page resources without showing it.
+                    // This catches runtime XAML/resource errors in the installed app.
+                    var uiProbe = new MainWindow();
+                    uiProbe.Close();
+
                     Shutdown(0);
                 }
                 catch (Exception ex)
