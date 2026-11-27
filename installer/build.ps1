@@ -93,6 +93,19 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'tools\test_source_export.py') -Dest
 New-Item -ItemType Directory -Force -Path (Join-Path $payload 'tools\backends') | Out-Null
 Copy-Item -Path (Join-Path $repoRoot 'tools\backends\*') -Destination (Join-Path $payload 'tools\backends') -Recurse -Force
 
+# Build the native-looking WPF desktop client for .NET Framework 4.8.
+# This framework is included with Windows 10 22H2 / Windows 11 and avoids
+# requiring the user to install a separate .NET runtime.
+$guiProject = Join-Path $repoRoot 'ui\DownloaderPlus\DownloaderPlus.csproj'
+$guiOutput = Join-Path $payload 'app'
+New-Item -ItemType Directory -Force -Path $guiOutput | Out-Null
+Write-Host 'Собираю графическое приложение Downloader Plus (WPF / .NET Framework 4.8)...'
+dotnet build $guiProject --configuration Release --output $guiOutput --verbosity minimal
+if ($LASTEXITCODE -ne 0) { throw 'Не удалось собрать графическое приложение WPF.' }
+$guiExe = Join-Path $guiOutput 'DownloaderPlus.exe'
+if (-not (Test-Path -LiteralPath $guiExe -PathType Leaf)) { throw 'После сборки не найден DownloaderPlus.exe.' }
+
+
 
 $innosetupUrl = 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe'
 $innosetupInstaller = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
@@ -114,7 +127,7 @@ $installerScript = Join-Path $PSScriptRoot 'YandexMusicDownloaderPlus.iss'
 & $iscc "/DPayloadDir=$payload" "/DOutputDir=$OutputDirectory" $installerScript
 if ($LASTEXITCODE -ne 0) { throw "Компиляция установщика завершилась с кодом $LASTEXITCODE." }
 
-$setupExe = Join-Path $OutputDirectory 'YandexMusicDownloaderPlus-Setup-0.2.0-preview.3.exe'
+$setupExe = Join-Path $OutputDirectory 'YandexMusicDownloaderPlus-Setup-0.3.0.exe'
 if (-not (Test-Path -LiteralPath $setupExe -PathType Leaf)) { throw "Итоговый EXE не найден: $setupExe" }
 
 # Install the just-built setup silently on the Windows runner and invoke the
@@ -130,16 +143,21 @@ if ($smokeInstall.ExitCode -ne 0) {
 }
 
 $installedLauncher = Join-Path $smokeDir 'runtime\Scripts\yandex-music-downloader.exe'
+$installedGui = Join-Path $smokeDir 'app\DownloaderPlus.exe'
 $installedPython = Join-Path $smokeDir 'runtime\python.exe'
 $installedScript = Join-Path $smokeDir 'YandexMusicDownloader.ps1'
 $installedInventory = Join-Path $smokeDir 'tools\source_inventory.py'
 $installedBackend = Join-Path $smokeDir 'tools\backends\yandex_music_cli.py'
 $installedBackendModule = Join-Path $smokeDir 'tools\backends\yandex_music.py'
-foreach ($requiredFile in @($installedLauncher,$installedPython,$installedScript,$installedInventory,$installedBackend,$installedBackendModule)) {
+foreach ($requiredFile in @($installedLauncher,$installedPython,$installedScript,$installedInventory,$installedBackend,$installedBackendModule,$installedGui)) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "После тестовой установки отсутствует обязательный файл: $requiredFile"
     }
 }
+
+$guiSmoke = Start-Process -FilePath $installedGui -ArgumentList @('--self-test') -Wait -PassThru
+if ($guiSmoke.ExitCode -ne 0) { throw "Графическое приложение не прошло самопроверку после установки (код $($guiSmoke.ExitCode))." }
+Write-Host 'WPF GUI self-test: OK'
 
 $cliHelp = (& $installedLauncher --help 2>&1 | Out-String)
 $launcherExit = $LASTEXITCODE
