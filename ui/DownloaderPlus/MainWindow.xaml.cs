@@ -316,6 +316,7 @@ namespace DownloaderPlus
             }
             if (!EnsureToken()) return;
 
+            SourceUrlBox.Text = source;
             CaptureSettings();
             StartBackend("export", source, path, null);
         }
@@ -362,13 +363,27 @@ namespace DownloaderPlus
                 PageTitle.Text = action == "export" ? "Экспорт библиотеки" :
                     action == "retry" ? "Восстановление" : "Загрузка музыки";
 
+                var runSettings = new AppSettings
+                {
+                    SourceUrl = settings.SourceUrl,
+                    MusicPath = settings.MusicPath,
+                    ExportPath = settings.ExportPath,
+                    Quality = settings.Quality,
+                    Lyrics = settings.Lyrics,
+                    DelayRequests = settings.DelayRequests,
+                    AutoRetry = settings.AutoRetry,
+                    AutoFailover = settings.AutoFailover,
+                    AllowBrowserFallback = browserConsentForCurrentRun,
+                    Browser = settings.Browser
+                };
+
                 runner.Start(
                     applicationRoot,
                     action,
                     source,
                     outputPath,
                     logPath,
-                    settings,
+                    runSettings,
                     AppendOutput,
                     HandleBackendExit);
             }
