@@ -1,71 +1,50 @@
-# Known issues / TODO
+# Current status: implemented behavior and remaining limitations
 
-## Implemented in `fix/unavailable-track-reporting`
+This file describes the current code on the 0.3.0 release line. It replaces the older branch-by-branch TODO list, which contained several items that have since been implemented.
 
-- Recognize upstream messages such as `[1866/6737] Трек ... не доступен для скачивания`.
-- Keep unavailable-track messages separate from general/fatal errors, so they do not automatically trigger a retry of the entire playlist on their own.
-- Create `unavailable-*.csv` with playlist index, total, displayed track label, number of observed attempts, pass names, and raw message(s).
-- Make the end-of-pass summary warn when unavailable tracks were reported instead of claiming there were no detected problems.
-- Include unavailable-track count and CSV path in `errors-*.txt`.
-- Add menu option 5 to analyse an existing download log without launching a downloader pass.
+## Implemented and covered by automated checks
 
-## Implemented in `fix/dpapi-token-module-fallback`
+- **Windows desktop app:** WPF client on .NET Framework 4.8 with download, export, recovery, logs and settings sections. The console wrapper remains available as a secondary mode.
+- **Shared orchestration:** GUI calls the same PowerShell layer as the console; source inventory, reports, retries and backend selection are not duplicated in the WPF client.
+- **DPAPI token storage:** same per-user %APPDATA%\YandexMusicDownloaderPlus\token.dpapi format is shared between GUI and console. GUI self-test performs a protect/read/unprotect round-trip.
+- **Primary launcher token handling:** bundled launcher receives the token through a temporary environment variable and injects it inside Python after process start, so it is absent from the bundled child process command line.
+- **Metadata export:** CSV, JSON, TXT and XML serializers are tested offline. Tokens and audio files are excluded.
+- **Independent API backend:** supports track, album, playlist and paginated artist sources.
+- **Recovery safety:** alternate downloads are staged, checked for readability/duration, and moved into the library only after validation. Suspect zero-length or partial results are preserved in quarantine rather than deleted.
+- **Unavailable track reports:** unavailable CSV, errors TXT, per-file outcome reports and library-status snapshots.
+- **Windows installer:** bundled Python, main launcher, independent API module, optional yt-dlp plugin, WPF GUI and shortcuts. CI performs a silent install and validates required files and GUI self-test.
 
-- Use the native Windows DPAPI API directly for saved-token load/save, bypassing `Microsoft.PowerShell.Security` module autoload.
-- Preserve the previous `ConvertFrom-SecureString` DPAPI hex format so the existing `%APPDATA%\\YandexMusicDownloaderPlus\\token.dpapi` can be reused without entering the token again.
-- Keep the token encrypted at rest; do not use plaintext token files as a workaround.
-- Added menu option 6 to test saved-token decryption without displaying the secret or making a network request.
-- Added menu option 7 to verify encrypt/write/read/decrypt round-trip through a temporary DPAPI file; the original saved-token file is not modified, and the temporary file is removed.
-- Windows test passed: menu option 6 decrypted the existing `token.dpapi`.
-- Windows one-track run passed: the saved token was reused and `Just Blue.m4a` was created with a nonzero size (6,980,159 bytes). The local test confirms the file exists; playback/duration should be checked by the user if validating audio integrity.
-- Windows round-trip test passed: menu option 7 decrypted the saved token, encrypted it to a temporary DPAPI file, reloaded and decrypted it, and confirmed the values match. The original saved-token file was not modified; the temporary file was removed.
+## Remaining limitations (not defects that can be solved entirely inside this wrapper)
 
-## Implemented in `feature/download-result-summary`
+### Service/API dependencies
 
-- Take a snapshot of audio files in the destination before and after each pass and report new, modified, and newly/modified zero-length audio files.
-- Parse distinct audio output paths reported by the downloader and report any reported paths that are absent after the pass or have no observed file change.
-- Append the same per-pass file summary to the download log.
-- Export `file-outcomes-*.csv` with one row per reported audio path and every new/changed audio file found in the destination. Rows include observed status, whether the downloader mentioned the path, existence and size before/after, and last-write time.
-- Do not claim that a nonzero file is complete or playable based on size alone.
+- **Live authenticated integration is not exercised by GitHub CI.** CI cannot access the user's Yandex account/token. Before each stable release, manually verify one track, one album, a multi-track playlist and an artist page with a valid account.
+- **Yandex Music API may change.** The independent client reduces coupling to the main CLI but can also require maintenance if endpoints, response schemas, stream signing or account access change.
+- **A service-side access denial is terminal.** HTTP 401/403/429, not-allowed, DRM, region/subscription restrictions and unavailable tracks are not bypassed by switching backend.
+- **Full access is account-dependent.** A logged-in browser or OAuth token does not imply the account is entitled to obtain every full-length stream in every format.
+- **Playlist/artist metadata may be incomplete or paginated differently** after upstream API changes. A failed inventory does not stop download mode, but removal comparisons are skipped for that run.
 
-## Implemented in `feature/retry-incomplete-download`
+### Audio integrity and file accounting
 
-- Add menu option 8 to select one of the ten most recent `download-*.log` files and retry using the URL and destination folder recorded in that log.
-- Prefer the last URL actually passed to the downloader and use the most recent logged quality as the default; allow the user to choose a different quality.
-- Keep `--skip-existing` enabled on every retry. Ask before moving zero-length audio files to a sibling quarantine directory so the downloader has a chance to recreate them; never delete them automatically.
-- Record the source log path in the new run log. Re-enter the saved DPAPI token through the normal token flow; the token is not copied from the old log.
+- **A matching duration is not a cryptographic integrity proof.** A file may still contain codec artifacts, missing tags or damaged audio frames despite a matching duration.
+- **Silent upstream skips cannot be counted exactly** unless the main downloader reports them. Before/after filesystem snapshots and per-file CSVs provide observed results, not a server-confirmed success count.
+- **Existing files with unknown expected duration are preserved.** The app does not auto-quarantine a nonzero file if it cannot compare its duration to reliable source metadata; manual review is safer than guessing.
+- **Cancelled downloads may leave staging or partial files.** They are not automatically deleted; review logs and use recovery to assess them.
 
-## Implemented in `feature/failed-track-recovery`
+### Platform and GUI
 
-- Add a Python helper to enumerate tracks for supported source URLs through the installed `yandex_music` / `ymd` packages and save a per-run source inventory without storing the token in files or logs.
-- Compare the current inventory with the last snapshot for the exact same source URL and emit `library-status-*.csv` rows for removed-from-source tracks, unavailable tracks, and tracks whose reported path is missing, zero-length, or unchanged after a pass. Never delete local music files.
-- Add menu option 9 to build a retry queue from the selected run log, retry each track by direct URL through the main downloader, and offer the `yt-dlp` browser-session fallback for remaining failures.
-- Probe downloaded audio duration with Mutagen and compare it with source metadata. Put unverified/short alternate results in staging; quarantine a newly created primary result if its duration is invalid instead of silently replacing the target.
+- **Windows only.** The bundled installer targets x64 Windows 10 22H2 and Windows 11. The WPF GUI uses .NET Framework 4.8.
+- **The browser fallback needs an open, authenticated browser profile.** The user explicitly authorizes this at run time; locked profiles or browser cookie encryption can prevent extraction.
+- **The console route remains supported** for diagnosis or older scripts, but the WPF GUI is now the primary entry point.
+- **The installer is not code-signed.** SmartScreen may show a publisher warning; verify the release checksum before running it.
 
-## Remaining work
+## Manual release smoke-test checklist
 
-### 1. Reliable upstream counters and source inventory
-
-- Exact counts of files silently skipped remain unavailable unless the upstream downloader exposes them.
-- Source inventory relies on the installed `yandex_music` API and only records changes after a first successful snapshot for the same URL. If the API cannot enumerate a source, downloading continues but the removal comparison is skipped.
-- Duration checks reject obvious short previews, but they do not prove that every frame, tag, or audio segment is correct. Audio should still be spot-checked when a track matters.
-- A nonzero but incomplete file already present before a recovery run is not replaced automatically; option 9 asks whether to preserve it or move it to quarantine.
-
-### 2. Detecting nonzero partial files
-
-The retry menu handles missing files by rerunning the entire source with `--skip-existing`. Zero-byte audio files can be moved to quarantine after confirmation. A nonzero partial or corrupted audio file may still be treated as existing and skipped; automatic duration/decodability validation remains future work. Do not auto-delete local files. Any alternate-backend output should stay in a staging folder until the user verifies duration and tags.
-
-### 3. Progress and logging
-
-Keep live progress in the original terminal and ensure the same track-level output is appended to the run log. Continue to test Unicode names and ensure the final report parses the log/output from the current run, including non-English messages.
-
-### 4. Test matrix
-
-- Existing file is skipped
-- Missing normal track downloads
-- Unavailable track is recorded as unavailable rather than general success
-- Menu option 5 analyses the prior log without asking for a token or starting a download
-- Repeated unavailable message from a retry becomes one CSV row with an attempts count
-- Expired/invalid token produces a clear auth error
-- Ctrl+C leaves files already completed intact
-- Saved DPAPI token is reused by the same Windows user
+1. Install on a clean Windows 10 22H2 or Windows 11 profile.
+2. Save and reload a token in the GUI; also verify the console mode sees the same DPAPI token.
+3. Download one single track to a temporary folder; listen to the result and inspect tags.
+4. Download a short playlist and an album; verify skipped existing files and file layout.
+5. Export the same playlist to CSV, JSON, TXT and XML; confirm track count and ordering.
+6. Run a deliberately interrupted download and resume/recover it.
+7. Test a valid artist URL and ensure the result count matches the web client's track list.
+8. Test the browser fallback only after explicitly consenting and using a profile logged in to the intended account.
