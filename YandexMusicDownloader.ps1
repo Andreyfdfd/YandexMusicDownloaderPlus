@@ -2110,7 +2110,7 @@ if ($script:guiMode) {
 if ($actionChoice -eq '0') { exit 0 }
 if ($actionChoice -eq '4') {
     Invoke-AlternativeTrack
-    Read-Host 'Нажми Enter для выхода' | Out-Null
+    if (-not $script:guiMode) { Read-Host 'Нажми Enter для выхода' | Out-Null }
     exit 0
 }
 if ($actionChoice -eq '5') {
@@ -2280,55 +2280,79 @@ if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings) 
 }
 
 if ($actionChoice -ne '10') {
-Write-Host ''
-Write-Host 'Выбор качества/формата:' -ForegroundColor Cyan
-if ($script:supportsForceMp3) {
-    Write-Host '  1 — MP3 (только если поддерживается установленной версией)'
-    Write-Host '  2 — AAC/M4A 192 кбит/с (как в исходной команде, без повторного перекодирования)'
-    Write-Host '  3 — FLAC (если lossless доступен для трека и аккаунта)'
     $formatDefaultChoice = '2'
     if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings) {
         if ($script:resumeSettings.ForceMp3) { $formatDefaultChoice = '1' }
         elseif ($script:resumeSettings.QualityValue -eq '2') { $formatDefaultChoice = '3' }
     }
-    $formatChoice = Read-MenuChoice 'Формат' @('1','2','3') $formatDefaultChoice
-    switch ($formatChoice) {
-        '1' { $script:quality = '1'; $script:forceMp3 = $true;  $script:formatName = 'MP3' }
-        '2' { $script:quality = '1'; $script:forceMp3 = $false; $script:formatName = 'AAC/M4A 192 kbps' }
-        '3' { $script:quality = '2'; $script:forceMp3 = $false; $script:formatName = 'FLAC' }
+    if ($script:guiMode) {
+        $guiQuality = ([string]$env:YMDPLUS_GUI_QUALITY).ToLowerInvariant()
+        switch ($guiQuality) {
+            'mp3' {
+                if ($script:supportsForceMp3) { $formatChoice = '1' }
+                else { $formatChoice = '2' }
+            }
+            'flac' { $formatChoice = if ($script:supportsForceMp3) { '3' } else { '2' } }
+            default { $formatChoice = if ($script:supportsForceMp3) { '2' } else { '1' } }
+        }
+    } else {
+        Write-Host ''
+        Write-Host 'Выбор качества/формата:' -ForegroundColor Cyan
+        if ($script:supportsForceMp3) {
+            Write-Host '  1 — MP3 (только если поддерживается установленной версией)'
+            Write-Host '  2 — AAC/M4A 192 кбит/с (как в исходной команде, без повторного перекодирования)'
+            Write-Host '  3 — FLAC (если lossless доступен для трека и аккаунта)'
+            $formatChoice = Read-MenuChoice 'Формат' @('1','2','3') $formatDefaultChoice
+        } else {
+            Write-Host '  1 — AAC/M4A 192 кбит/с (как в исходной команде)'
+            Write-Host '  2 — FLAC (если lossless доступен для трека и аккаунта)'
+            Write-Host '  (Установленная версия не предоставляет --force-mp3; MP3 не будет выдаваться за исходный формат.)' -ForegroundColor DarkYellow
+            $formatDefaultChoice = if ($formatDefaultChoice -eq '3') { '2' } else { '1' }
+            if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings -and $script:resumeSettings.ForceMp3) {
+                Write-Host 'В старом логе указан MP3, но текущий загрузчик не поддерживает --force-mp3. Повтор будет в AAC/M4A или FLAC.' -ForegroundColor Yellow
+            }
+            $formatChoice = Read-MenuChoice 'Формат' @('1','2') $formatDefaultChoice
+        }
+    }
+    if ($script:supportsForceMp3) {
+        switch ($formatChoice) {
+            '1' { $script:quality = '1'; $script:forceMp3 = $true;  $script:formatName = 'MP3' }
+            '2' { $script:quality = '1'; $script:forceMp3 = $false; $script:formatName = 'AAC/M4A 192 kbps' }
+            '3' { $script:quality = '2'; $script:forceMp3 = $false; $script:formatName = 'FLAC' }
+        }
+    } else {
+        switch ($formatChoice) {
+            '1' { $script:quality = '1'; $script:forceMp3 = $false; $script:formatName = 'AAC/M4A 192 kbps' }
+            '2' { $script:quality = '2'; $script:forceMp3 = $false; $script:formatName = 'FLAC' }
+        }
+    }
+
+    $script:lyricsChoice = '0'
+    if ($script:supportsLyrics) {
+        if ($script:guiMode) {
+            $script:lyricsChoice = if ($env:YMDPLUS_GUI_LYRICS -in @('1','2')) { $env:YMDPLUS_GUI_LYRICS } else { '0' }
+        } else {
+            Write-Host ''
+            Write-Host 'Тексты песен:'
+            Write-Host '  0 — не скачивать'
+            Write-Host '  1 — текст в тегах'
+            Write-Host '  2 — отдельные LRC-файлы с временными метками'
+            $script:lyricsChoice = Read-MenuChoice 'Тексты' @('0','1','2') '0'
+        }
+    }
+
+    $script:delay = '0'
+    if ($script:supportsDelay) {
+        if ($script:guiMode) {
+            $script:delay = if ($env:YMDPLUS_GUI_DELAY -eq '1') { '1' } else { '0' }
+        } else {
+            Write-Host ''
+            Write-Host 'Задержка между запросами: 0 — быстрее; 1 — осторожнее при ограничениях API.'
+            $script:delay = Read-MenuChoice 'Задержка в секундах' @('0','1') '0'
+        }
     }
 } else {
-    Write-Host '  1 — AAC/M4A 192 кбит/с (как в исходной команде)'
-    Write-Host '  2 — FLAC (если lossless доступен для трека и аккаунта)'
-    Write-Host '  (Установленная версия не предоставляет --force-mp3; MP3 не будет выдаваться за исходный формат.)' -ForegroundColor DarkYellow
-    $formatDefaultChoice = '1'
-    if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings -and $script:resumeSettings.QualityValue -eq '2') { $formatDefaultChoice = '2' }
-    if ((@('8','9') -contains $actionChoice) -and $null -ne $script:resumeSettings -and $script:resumeSettings.ForceMp3) {
-        Write-Host 'В старом логе указан MP3, но текущий загрузчик не поддерживает --force-mp3. Повтор будет в AAC/M4A или FLAC.' -ForegroundColor Yellow
-    }
-    $formatChoice = Read-MenuChoice 'Формат' @('1','2') $formatDefaultChoice
-    switch ($formatChoice) {
-        '1' { $script:quality = '1'; $script:forceMp3 = $false; $script:formatName = 'AAC/M4A 192 kbps' }
-        '2' { $script:quality = '2'; $script:forceMp3 = $false; $script:formatName = 'FLAC' }
-    }
-}
-
-$script:lyricsChoice = '0'
-if ($script:supportsLyrics) {
-    Write-Host ''
-    Write-Host 'Тексты песен:'
-    Write-Host '  0 — не скачивать'
-    Write-Host '  1 — текст в тегах'
-    Write-Host '  2 — отдельные LRC-файлы с временными метками'
-    $script:lyricsChoice = Read-MenuChoice 'Тексты' @('0','1','2') '0'
-}
-
-$script:delay = '0'
-if ($script:supportsDelay -or $actionChoice -eq '10') {
-    Write-Host ''
-    Write-Host 'Задержка между запросами: 0 — быстрее; 1 — осторожнее при ограничениях API.'
-    $script:delay = Read-MenuChoice 'Задержка в секундах' @('0','1') '0'
-}
+    $script:delay = if ($script:guiMode -and $env:YMDPLUS_GUI_DELAY -eq '1') { '1' } else { '0' }
 }
 
 # Persistent token storage: Windows DPAPI, bound to the current Windows user profile.
@@ -2340,62 +2364,75 @@ $tokenPtr = [IntPtr]::Zero
 $script:token = $null
 $useSavedToken = $false
 
-if (Test-Path -LiteralPath $tokenStorePath -PathType Leaf) {
+if ($script:guiMode) {
+    if (-not (Test-Path -LiteralPath $tokenStorePath -PathType Leaf)) {
+        throw 'Токен не настроен. Открой раздел «Настройки», введи токен Яндекс Музыки и сохрани его.'
+    }
     try {
         $storedCiphertext = (Get-Content -LiteralPath $tokenStorePath -Raw -ErrorAction Stop).Trim()
-        if ([string]::IsNullOrWhiteSpace($storedCiphertext)) {
-            throw 'Файл сохранённого токена пуст.'
-        }
-        $candidateToken = [YandexMusicDownloaderPlus.DpapiTokenStore]::UnprotectToSecureString($storedCiphertext)
-        Write-Host ''
-        Write-Host 'Найден сохранённый токен, зашифрованный для текущего пользователя Windows.' -ForegroundColor Cyan
-        $savedTokenChoice = Read-Host 'Enter — использовать его; N — ввести новый; D — удалить сохранённый и ввести новый [Enter/N/D]'
-        if ([string]::IsNullOrWhiteSpace($savedTokenChoice) -or $savedTokenChoice -match '^(?i:y|yes|д|да)$') {
-            $secureToken = $candidateToken
-            $useSavedToken = $true
-            Write-Host 'Используется сохранённый токен.' -ForegroundColor Green
-        } else {
-            $candidateToken.Dispose()
-            if ($savedTokenChoice -match '^(?i:d|delete|удалить)$') {
-                Remove-Item -LiteralPath $tokenStorePath -Force -ErrorAction Stop
-                Write-Host 'Сохранённый токен удалён.' -ForegroundColor Yellow
-            } else {
-                Write-Host 'Будет запрошен новый токен.' -ForegroundColor DarkGray
-            }
-        }
+        if ([string]::IsNullOrWhiteSpace($storedCiphertext)) { throw 'Файл сохранённого токена пуст.' }
+        $secureToken = [YandexMusicDownloaderPlus.DpapiTokenStore]::UnprotectToSecureString($storedCiphertext)
+        $useSavedToken = $true
     } catch {
-        Write-Host "Не удалось расшифровать сохранённый токен через Windows DPAPI: $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Host 'Введи токен заново. При сохранении файл будет заменён.' -ForegroundColor DarkGray
+        throw "Не удалось расшифровать токен через Windows DPAPI: $($_.Exception.Message)"
     }
-}
-
-if (-not $useSavedToken) {
-    $secureToken = Read-Host 'Вставь токен Яндекс Музыки (ввод скрыт)' -AsSecureString
-    if ($secureToken.Length -eq 0) {
-        Write-Host 'Токен не введён. Загрузка отменена.' -ForegroundColor Red
-        Read-Host 'Нажми Enter для выхода' | Out-Null
-        exit 1
-    }
-
-    $saveChoice = Read-Host 'Сохранить токен зашифрованным для следующих запусков этого пользователя Windows? [Y/n]'
-    $saveToken = [string]::IsNullOrWhiteSpace($saveChoice) -or $saveChoice -match '^(?i:y|yes|д|да)$'
-    if ($saveToken) {
+} else {
+    if (Test-Path -LiteralPath $tokenStorePath -PathType Leaf) {
         try {
-            New-Item -ItemType Directory -Path $tokenStoreDir -Force -ErrorAction Stop | Out-Null
-            $encryptedToken = [YandexMusicDownloaderPlus.DpapiTokenStore]::ProtectSecureString($secureToken)
-            Set-Content -LiteralPath $tokenStorePath -Value $encryptedToken -Encoding ASCII -ErrorAction Stop
-            Write-Host "Токен сохранён в зашифрованном виде: $tokenStorePath" -ForegroundColor Green
-            Write-Host 'Он не хранится в открытом виде в папке проекта или журнале.' -ForegroundColor DarkGray
+            $storedCiphertext = (Get-Content -LiteralPath $tokenStorePath -Raw -ErrorAction Stop).Trim()
+            if ([string]::IsNullOrWhiteSpace($storedCiphertext)) {
+                throw 'Файл сохранённого токена пуст.'
+            }
+            $candidateToken = [YandexMusicDownloaderPlus.DpapiTokenStore]::UnprotectToSecureString($storedCiphertext)
+            Write-Host ''
+            Write-Host 'Найден сохранённый токен, зашифрованный для текущего пользователя Windows.' -ForegroundColor Cyan
+            $savedTokenChoice = Read-Host 'Enter — использовать его; N — ввести новый; D — удалить сохранённый и ввести новый [Enter/N/D]'
+            if ([string]::IsNullOrWhiteSpace($savedTokenChoice) -or $savedTokenChoice -match '^(?i:y|yes|д|да)$') {
+                $secureToken = $candidateToken
+                $useSavedToken = $true
+                Write-Host 'Используется сохранённый токен.' -ForegroundColor Green
+            } else {
+                $candidateToken.Dispose()
+                if ($savedTokenChoice -match '^(?i:d|delete|удалить)$') {
+                    Remove-Item -LiteralPath $tokenStorePath -Force -ErrorAction Stop
+                    Write-Host 'Сохранённый токен удалён.' -ForegroundColor Yellow
+                } else {
+                    Write-Host 'Будет запрошен новый токен.' -ForegroundColor DarkGray
+                }
+            }
         } catch {
-            Write-Host "Не удалось сохранить токен через Windows DPAPI: $($_.Exception.Message)" -ForegroundColor Yellow
-            Write-Host 'Продолжаю работу без сохранения токена.' -ForegroundColor DarkGray
+            Write-Host "Не удалось расшифровать сохранённый токен через Windows DPAPI: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host 'Введи токен заново. При сохранении файл будет заменён.' -ForegroundColor DarkGray
         }
-    } else {
-        # Avoid accidentally reusing an old saved token if user opts not to store the new one.
-        if (Test-Path -LiteralPath $tokenStorePath -PathType Leaf) {
-            Remove-Item -LiteralPath $tokenStorePath -Force -ErrorAction SilentlyContinue
+    }
+
+    if (-not $useSavedToken) {
+        $secureToken = Read-Host 'Вставь токен Яндекс Музыки (ввод скрыт)' -AsSecureString
+        if ($secureToken.Length -eq 0) {
+            Write-Host 'Токен не введён. Загрузка отменена.' -ForegroundColor Red
+            Read-Host 'Нажми Enter для выхода' | Out-Null
+            exit 1
         }
-        Write-Host 'Токен останется только в памяти текущего запуска.' -ForegroundColor DarkGray
+
+        $saveChoice = Read-Host 'Сохранить токен зашифрованным для следующих запусков этого пользователя Windows? [Y/n]'
+        $saveToken = [string]::IsNullOrWhiteSpace($saveChoice) -or $saveChoice -match '^(?i:y|yes|д|да)$'
+        if ($saveToken) {
+            try {
+                New-Item -ItemType Directory -Path $tokenStoreDir -Force -ErrorAction Stop | Out-Null
+                $encryptedToken = [YandexMusicDownloaderPlus.DpapiTokenStore]::ProtectSecureString($secureToken)
+                Set-Content -LiteralPath $tokenStorePath -Value $encryptedToken -Encoding ASCII -ErrorAction Stop
+                Write-Host "Токен сохранён в зашифрованном виде: $tokenStorePath" -ForegroundColor Green
+                Write-Host 'Он не хранится в открытом виде в папке проекта или журнале.' -ForegroundColor DarkGray
+            } catch {
+                Write-Host "Не удалось сохранить токен через Windows DPAPI: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host 'Продолжаю работу без сохранения токена.' -ForegroundColor DarkGray
+            }
+        } else {
+            if (Test-Path -LiteralPath $tokenStorePath -PathType Leaf) {
+                Remove-Item -LiteralPath $tokenStorePath -Force -ErrorAction SilentlyContinue
+            }
+            Write-Host 'Токен останется только в памяти текущего запуска.' -ForegroundColor DarkGray
+        }
     }
 }
 
@@ -2438,7 +2475,7 @@ try {
         Write-Host "  Простой текстовый список: $($exportResult.Files.txt)"
         Write-Host "  XML для совместимого импорта: $($exportResult.Files.xml)"
         Write-Host "Журнал: $($script:logPath)" -ForegroundColor DarkGray
-        Read-Host 'Нажми Enter для выхода' | Out-Null
+        if (-not $script:guiMode) { Read-Host 'Нажми Enter для выхода' | Out-Null }
         exit 0
     }
 
@@ -2477,7 +2514,7 @@ try {
     if ($actionChoice -eq '9') {
         $recoveryPython = Find-PythonForDownloader -ExecutablePath $script:exePath -FallbackExecutablePath $defaultExe
         $skipPrimary = -not $script:primaryBackendReady
-        Invoke-RetryFailedTracks -PreviousLogPath $script:resumeFromLog -PythonExe $recoveryPython -LogsDir $logsDir -RunTimestamp $script:timestamp -Automatic:$skipPrimary -PrimaryAlreadyTried:$skipPrimary
+        Invoke-RetryFailedTracks -PreviousLogPath $script:resumeFromLog -PythonExe $recoveryPython -LogsDir $logsDir -RunTimestamp $script:timestamp -Automatic:($skipPrimary -or $script:guiMode) -PrimaryAlreadyTried:$skipPrimary
     } else {
         $script:sourceInventoryRecords = @()
         $script:previousSourceInventory = @()
@@ -2520,7 +2557,7 @@ try {
         Write-Host ''
         Write-Host 'Похоже, текущая версия загрузчика не распознала современную ссылку вида /playlists/lk.…' -ForegroundColor Yellow
         Write-Host 'В репозитории загрузчика описывался похожий сбой. Можно попробовать привычный адрес избранного по логину: /users/ЛОГИН/playlists/3.' -ForegroundColor Gray
-        $retryLogin = Read-Host 'Логин Яндекса (Enter — пропустить этот способ)'
+        $retryLogin = if ($script:guiMode) { '' } else { Read-Host 'Логин Яндекса (Enter — пропустить этот способ)' }
         if (-not [string]::IsNullOrWhiteSpace($retryLogin)) {
             $safeLogin = $retryLogin.Trim()
             if ($safeLogin -match '^[A-Za-z0-9._-]+$') {
@@ -2543,12 +2580,12 @@ try {
             Write-Host '  0 — закончить'
             Write-Host '  1 — повторить в FLAC'
             Write-Host '  2 — повторить в AAC/M4A 192 кбит/с (может помочь, если FLAC недоступен)'
-            $retryChoice = Read-MenuChoice 'Повторный проход' @('0','1','2') '1'
+            $retryChoice = if ($script:guiMode) { '1' } else { Read-MenuChoice 'Повторный проход' @('0','1','2') '1' }
             if ($retryChoice -eq '1') {
                 $lastPass = Invoke-DownloadPass -PassName 'ПОВТОР FLAC' -QualityValue '2'
                 $stillErrors = Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode -FileStats $lastPass.FileStats
                 if ($stillErrors) {
-                    $fallbackChoice = Read-MenuChoice 'Остались ошибки. Попробовать AAC/M4A 192 кбит/с для ещё не скачанных треков? (1 — да, 0 — нет)' @('0','1') '1'
+                    $fallbackChoice = if ($script:guiMode) { '1' } else { Read-MenuChoice 'Остались ошибки. Попробовать AAC/M4A 192 кбит/с для ещё не скачанных треков? (1 — да, 0 — нет)' @('0','1') '1' }
                     if ($fallbackChoice -eq '1') {
                         $lastPass = Invoke-DownloadPass -PassName 'РЕЗЕРВНЫЙ ПРОХОД AAC/M4A 192' -QualityValue '1'
                         [void](Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode -FileStats $lastPass.FileStats)
@@ -2559,7 +2596,7 @@ try {
                 [void](Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode -FileStats $lastPass.FileStats)
             }
         } else {
-            $retryChoice = Read-MenuChoice 'Повторить один раз в том же качестве? (0 — нет, 1 — да)' @('0','1') '1'
+            $retryChoice = if ($script:guiMode) { if ($env:YMDPLUS_GUI_AUTO_RETRY -eq '1') { '1' } else { '0' } } else { Read-MenuChoice 'Повторить один раз в том же качестве? (0 — нет, 1 — да)' @('0','1') '1' }
             if ($retryChoice -eq '1') {
                 $lastPass = Invoke-DownloadPass -PassName 'ПОВТОРНЫЙ ПРОХОД' -QualityValue $script:quality
                 [void](Show-RunEnding -Text $lastPass.Text -ExitCode $lastPass.ExitCode -FileStats $lastPass.FileStats)
@@ -2578,7 +2615,7 @@ try {
             Write-Host ''
             Write-Host ("Основной backend оставил проблемные композиции. Кандидатов по отчёту: {0}." -f $recoverableRows.Count) -ForegroundColor Yellow
             Write-Host 'Порядок автоматического восстановления: основной загрузчик уже проверен → независимый API-клиент → yt-dlp с браузерной сессией (последний способ запросит отдельное разрешение).' -ForegroundColor Gray
-            $autoFailoverChoice = Read-MenuChoice "Попробовать резервные backend’ы для неудачных треков? (0 - нет, 1 - да)" @("0","1") "1"
+            $autoFailoverChoice = if ($script:guiMode) { if ($env:YMDPLUS_GUI_AUTO_FAILOVER -eq '0') { '0' } else { '1' } } else { Read-MenuChoice "Попробовать резервные backend’ы для неудачных треков? (0 - нет, 1 - да)" @("0","1") "1" }
             if ($autoFailoverChoice -eq '1') {
                 $recoveryPython = Find-PythonForDownloader -ExecutablePath $script:exePath -FallbackExecutablePath $defaultExe
                 Invoke-RetryFailedTracks -PreviousLogPath $script:logPath -PythonExe $recoveryPython -LogsDir $logsDir -RunTimestamp $script:timestamp -Automatic -PrimaryAlreadyTried
@@ -2641,6 +2678,7 @@ try {
     }
 } catch {
     $launchError = [string]$_.Exception.Message
+    if ($script:guiMode) { $script:guiExitCode = 1 }
     Write-Host "Ошибка запуска: $launchError" -ForegroundColor Red
     if ($_.InvocationInfo -and $_.InvocationInfo.ScriptLineNumber) {
         Write-Host "Место в скрипте: строка $($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor DarkYellow
@@ -2668,4 +2706,5 @@ try {
     $script:token = $null
 }
 
-Read-Host 'Нажми Enter, чтобы закрыть окно' | Out-Null
+if (-not $script:guiMode) { Read-Host 'Нажми Enter, чтобы закрыть окно' | Out-Null }
+if ($script:guiMode -and $script:guiExitCode -ne 0) { exit $script:guiExitCode }
