@@ -27,7 +27,11 @@ func main() {
 	args := make([]string, 0, len(os.Args)+4)
 	// The upstream package registers ymd.cli:main as a console-script entry
 	// point, but ymd/cli.py does not execute main() when run with python -m.
-	args = append(args, "-X", "utf8", "-u", "-c", "from ymd.cli import main; raise SystemExit(main())")
+	// The GUI/PowerShell wrapper places the OAuth token in a short-lived
+	// environment variable. Inject it into argparse only after Python starts:
+	// this keeps the secret out of the Python process command line.
+	pythonEntry := "import os,sys; from ymd.cli import main; token=os.environ.pop('YMDPLUS_UPSTREAM_TOKEN', None); sys.argv=['yandex-music-downloader']+sys.argv[1:]; token and sys.argv.extend(['--token', token]); raise SystemExit(main())"
+	args = append(args, "-X", "utf8", "-u", "-c", pythonEntry)
 	args = append(args, os.Args[1:]...)
 
 	cmd := exec.Command(pythonExe, args...)
