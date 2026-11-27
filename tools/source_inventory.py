@@ -21,8 +21,19 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 from urllib.parse import urlparse
 
-from yandex_music import Client
-from ymd import core
+try:
+    from yandex_music import Client
+    _PRIMARY_YANDEX_IMPORT_ERROR = ""
+except Exception as exc:
+    Client = None
+    _PRIMARY_YANDEX_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+
+try:
+    from ymd import core
+    _PRIMARY_YMD_IMPORT_ERROR = ""
+except Exception as exc:
+    core = None
+    _PRIMARY_YMD_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 PATH_PATTERN = Path("#album-artist", "#album", "#number - #title")
 BATCH_SIZE = 10
@@ -295,6 +306,12 @@ def collect_inventory(source_url, delay_seconds=0.0):
 
     primary_error = ""
     try:
+        if Client is None or core is None:
+            missing = "; ".join(
+                value for value in (_PRIMARY_YANDEX_IMPORT_ERROR, _PRIMARY_YMD_IMPORT_ERROR)
+                if value
+            )
+            raise RuntimeError(f"Основной пакет загрузчика не импортируется: {missing}")
         client = Client(token)
         client.init()
         if delay_seconds > 0:
