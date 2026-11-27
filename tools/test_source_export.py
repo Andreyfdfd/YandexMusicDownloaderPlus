@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 from xml.etree import ElementTree as ET
 
 TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
+import source_inventory  # noqa: E402
 from source_inventory import (
     direct_api_track_record,
     is_nonrecoverable_service_failure,
@@ -69,6 +72,23 @@ def main() -> int:
     assert direct_record["ISRC"] == "RUA1A2600009"
     assert direct_record["RelativeBasePath"] == "Исполнитель/Сборник/3 - Ночной маршрут"
     assert "\\" not in direct_record["RelativeBasePath"]
+
+    # Prove export inventory can switch to the vendored API implementation even
+    # when the primary yandex_music / ymd packages cannot be imported.
+    with (
+        patch.object(source_inventory, "Client", None),
+        patch.object(source_inventory, "core", None),
+        patch.object(source_inventory, "_PRIMARY_YANDEX_IMPORT_ERROR", "ImportError: simulated"),
+        patch.object(source_inventory, "_PRIMARY_YMD_IMPORT_ERROR", "ImportError: simulated"),
+        patch.object(source_inventory, "tracks_for_source_direct_api", return_value=[direct_record]),
+        patch.dict(os.environ, {"YMDPLUS_INVENTORY_TOKEN": "test-token"}),
+    ):
+        fallback_records = source_inventory.collect_inventory(
+            "https://music.yandex.ru/album/901",
+            delay_seconds=0,
+        )
+        assert len(fallback_records) == 1
+        assert fallback_records[0]["TrackId"] == "900"
 
     with tempfile.TemporaryDirectory(prefix="ymdp-export-test-") as temp_dir:
         manifest = write_export_files(
