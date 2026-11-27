@@ -1051,7 +1051,7 @@ function Invoke-YtDlpRecoveryTrack([object]$Candidate, [string]$PythonExe, [stri
 function Test-NonRecoverableServiceFailure([string]$Details) {
     if ([string]::IsNullOrWhiteSpace($Details)) { return $false }
     # Do not rotate downloaders to override service-side or account-side denials.
-    return $Details -match '(?i)(не доступен для скачивания|недоступен для скачивания|playlist-not-found|not-found|not-allowed|HTTP\s*(401|403|404|429)|\b(401|403|404|429)\b|unauthori[sz]ed|forbidden|rate.?limit|too many requests|quota exceeded|subscription required|region restricted|DRM|smart_preview)'
+    return $Details -match '(?i)(не доступен для скачивания|недоступен для скачивания|not-allowed|HTTP\s*(401|403|429)|\b(401|403|429)\b|unauthori[sz]ed|forbidden|rate.?limit|too many requests|quota exceeded|subscription required|region restricted|DRM|smart_preview)'
 }
 
 function Invoke-DirectApiRecoveryTrack([object]$Candidate, [string]$PythonExe, [string]$StagingRoot) {
