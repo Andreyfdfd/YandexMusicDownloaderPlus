@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>DownloaderPlus</AssemblyName>
+    <RootNamespace>DownloaderPlus</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <AssemblyTitle>Yandex Music Downloader Plus</AssemblyTitle>
+    <Product>Yandex Music Downloader Plus</Product>
+    <Company>Andreyfdfd</Company>
+    <Version>0.3.0</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System.Security" />
+    <Reference Include="System.Runtime.Serialization" />
+  </ItemGroup>
+</Project>
