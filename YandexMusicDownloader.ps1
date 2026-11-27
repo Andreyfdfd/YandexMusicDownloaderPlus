@@ -2127,10 +2127,12 @@ if ($actionChoice -ne '10') {
     if ($actionChoice -eq '2' -or $actionChoice -eq '3') {
         $updated = Update-Downloader -ExecutablePath $script:exePath
         if (-not $updated) {
-            Read-Host 'Нажми Enter для выхода' | Out-Null
-            exit 1
-        }
-        if ($actionChoice -eq '2') {
+            if ($actionChoice -eq '2') {
+                Read-Host 'Обновление не удалось. Нажми Enter для выхода' | Out-Null
+                exit 1
+            }
+            Write-Host 'Обновление не удалось. Продолжаю с уже установленным backend, если он доступен; иначе включится резервная цепочка.' -ForegroundColor Yellow
+        } elseif ($actionChoice -eq '2') {
             Read-Host 'Обновление завершено. Нажми Enter для выхода' | Out-Null
             exit 0
         }
