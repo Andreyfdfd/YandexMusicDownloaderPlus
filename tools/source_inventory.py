@@ -201,7 +201,7 @@ def direct_api_track_record(track, index):
     )
     artist_folder = _safe_path_segment(album_artist or artists)
     album_folder = _safe_path_segment(album_title)
-    number = str(track_number).zfill(2) if track_number else ""
+    number = str(track_number) if track_number else ""
     if number:
         filename = f"{number} - {_safe_path_segment(title)}"
     else:
@@ -266,6 +266,24 @@ def tracks_for_source_direct_api(source_url, token):
     return [direct_api_track_record(track, index) for index, track in enumerate(tracks, start=1)]
 
 
+def is_nonrecoverable_service_failure(details):
+    text = str(details or "").lower()
+    markers = (
+        "not-allowed",
+        "unauthorized",
+        "forbidden",
+        "subscription required",
+        "region restricted",
+        "недоступен для скачивания",
+        "не доступен для скачивания",
+        "smart_preview",
+        "drm",
+    )
+    if any(marker in text for marker in markers):
+        return True
+    return bool(re.search(r"\\b(401|403|429)\\b", text))
+
+
 def collect_inventory(source_url, delay_seconds=0.0):
     token = os.environ.get("YMDPLUS_INVENTORY_TOKEN")
     if not token:
@@ -281,6 +299,12 @@ def collect_inventory(source_url, delay_seconds=0.0):
         return [track_record(track, index) for index, track in enumerate(tracks, start=1)]
     except Exception as exc:
         primary_error = f"{type(exc).__name__}: {exc}"
+        if is_nonrecoverable_service_failure(primary_error):
+            raise RuntimeError(
+                "Основной API-клиент получил отказ сервиса или ограничение доступа; "
+                "другой backend для обхода отказа не запускается. "
+                f"Ответ: {primary_error}"
+            ) from exc
         print(
             f"[inventory] Основной API-клиент не смог прочитать источник: {primary_error}. "
             "Пробую независимый клиент.",
