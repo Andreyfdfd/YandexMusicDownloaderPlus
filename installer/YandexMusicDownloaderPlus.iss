@@ -1,5 +1,5 @@
 #define AppName "Yandex Music Downloader Plus"
-#define AppVersion "0.2.0-preview.3"
+#define AppVersion "0.3.0"
 #define AppPublisher "Andreyfdfd"
 #ifndef PayloadDir
   #define PayloadDir "..\artifacts\payload"
@@ -28,7 +28,7 @@ SolidCompression=yes
 WizardStyle=modern
 SetupLogging=yes
 UninstallDisplayName=Yandex Music Downloader Plus
-UninstallDisplayIcon={app}\runtime\Scripts\yandex-music-downloader.exe
+UninstallDisplayIcon={app}\app\DownloaderPlus.exe
 CloseApplications=no
 
 [Types]
@@ -37,7 +37,7 @@ Name: "compact"; Description: "Основная программа"
 Name: "custom"; Description: "Выбор компонентов"; Flags: iscustom
 
 [Components]
-Name: "core"; Description: "Downloader Plus и встроенный Python 3.14"; Types: full compact custom; Flags: fixed
+Name: "core"; Description: "Графическое приложение Downloader Plus, PowerShell-движок и встроенный Python 3.14"; Types: full compact custom; Flags: fixed
 Name: "fallback"; Description: "Предустановить резервный источник yt-dlp и плагин Яндекс Музыки"; Types: full
 Name: "docs"; Description: "Инструкции и сведения о проекте"; Types: full custom
 
@@ -49,6 +49,7 @@ Name: "createmusicfolder"; Description: "Создать выбранную па�
 Name: "{app}\logs"
 
 [Files]
+Source: "{#PayloadDir}\app\*"; DestDir: "{app}\app"; Components: core; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PayloadDir}\YandexMusicDownloader.ps1"; DestDir: "{app}"; Components: core; Flags: ignoreversion
 Source: "{#PayloadDir}\Запустить_загрузку.bat"; DestDir: "{app}"; Components: core; Flags: ignoreversion
 Source: "{#PayloadDir}\tools\source_inventory.py"; DestDir: "{app}\tools"; Components: core; Flags: ignoreversion
@@ -59,11 +60,12 @@ Source: "{#PayloadDir}\README.md"; DestDir: "{app}\docs"; Components: docs; Flag
 Source: "{#PayloadDir}\ПРОЧТИ_МЕНЯ.txt"; DestDir: "{app}\docs"; Components: docs; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Yandex Music Downloader Plus\Downloader Plus"; Filename: "{app}\Запустить_загрузку.bat"; Components: core
-Name: "{autodesktop}\Downloader Plus"; Filename: "{app}\Запустить_загрузку.bat"; Components: core; Tasks: desktopicon
+Name: "{autoprograms}\Yandex Music Downloader Plus\Downloader Plus"; Filename: "{app}\app\DownloaderPlus.exe"; Components: core
+Name: "{autoprograms}\Yandex Music Downloader Plus\Консольная версия"; Filename: "{app}\Запустить_загрузку.bat"; Components: core
+Name: "{autodesktop}\Downloader Plus"; Filename: "{app}\app\DownloaderPlus.exe"; Components: core; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\Запустить_загрузку.bat"; Description: "Запустить Yandex Music Downloader Plus"; Flags: postinstall nowait skipifsilent unchecked; Components: core
+Filename: "{app}\app\DownloaderPlus.exe"; Description: "Запустить Yandex Music Downloader Plus"; Flags: postinstall nowait skipifsilent unchecked; Components: core
 
 [Code]
 var
