@@ -162,6 +162,8 @@ def _shape_track(t: dict, default_album: str = '') -> dict:
         'trackId': str(t.get('id') or t.get('realId') or ''),
         'albumId': str(album.get('id') or default_album or ''),
         'title': t.get('title') or '',
+        'version': t.get('version') or '',
+        'durationMs': t.get('durationMs') or 0,
         # У подкаст-эпизодов artists пустой — подставляем название шоу
         'artist': (', '.join(a.get('name', '') for a in (t.get('artists') or []) if a.get('name'))
                    or album.get('title', '')),
