@@ -119,22 +119,29 @@ namespace DownloaderPlus.Services
                 }
             }
 
-            Task.Delay(3500).ContinueWith(_ =>
+            int processId;
+            try { processId = current.Id; }
+            catch { return; }
+
+            Task.Run(async () =>
             {
+                await Task.Delay(3500).ConfigureAwait(false);
                 try
                 {
-                    if (current != null && !current.HasExited)
+                    using (var check = Process.GetProcessById(processId))
                     {
-                        var killer = new ProcessStartInfo
-                        {
-                            FileName = "taskkill.exe",
-                            Arguments = "/PID " + current.Id + " /T /F",
-                            UseShellExecute = false,
-                            CreateNoWindow = true
-                        };
-                        using (var taskkill = Process.Start(killer))
-                            taskkill?.WaitForExit(3000);
+                        if (check.HasExited) return;
                     }
+
+                    var killer = new ProcessStartInfo
+                    {
+                        FileName = "taskkill.exe",
+                        Arguments = "/PID " + processId + " /T /F",
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+                    using (var taskkill = Process.Start(killer))
+                        taskkill?.WaitForExit(3000);
                 }
                 catch { }
             });
@@ -142,7 +149,9 @@ namespace DownloaderPlus.Services
 
         private static string Quote(string value)
         {
-            return "\"" + (value ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+            // Windows file names cannot contain quotes; wrapping is sufficient.
+            // Backslashes must not be doubled in a raw CreateProcess command line.
+            return "\"" + (value ?? "") + "\"";
         }
 
         public void Dispose()
