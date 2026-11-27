@@ -54,6 +54,11 @@ $embeddedPython = Join-Path $runtime 'python.exe'
 & $embeddedPython -c "import ymd.cli, yandex_music, mutagen, pip; print('Embedded Python runtime: OK')"
 if ($LASTEXITCODE -ne 0) { throw 'Проверка импортов встроенного Python завершилась ошибкой.' }
 
+& $embeddedPython -m py_compile (Join-Path $repoRoot 'tools\source_inventory.py') (Join-Path $repoRoot 'tools\backends\yandex_music.py') (Join-Path $repoRoot 'tools\backends\yandex_music_cli.py')
+if ($LASTEXITCODE -ne 0) { throw 'Синтаксическая проверка вспомогательных Python-модулей не пройдена.' }
+& $embeddedPython (Join-Path $repoRoot 'tools\test_source_export.py')
+if ($LASTEXITCODE -ne 0) { throw 'Тесты сериализации экспорта библиотеки не пройдены.' }
+
 Push-Location (Join-Path $repoRoot 'tools\launcher')
 try {
     $env:GO111MODULE = 'on'
@@ -71,6 +76,10 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'README.md') -Destination $payload
 Copy-Item -LiteralPath (Join-Path $repoRoot 'ПРОЧТИ_МЕНЯ.txt') -Destination $payload
 New-Item -ItemType Directory -Force -Path (Join-Path $payload 'tools') | Out-Null
 Copy-Item -LiteralPath (Join-Path $repoRoot 'tools\source_inventory.py') -Destination (Join-Path $payload 'tools')
+Copy-Item -LiteralPath (Join-Path $repoRoot 'tools\test_source_export.py') -Destination (Join-Path $payload 'tools')
+New-Item -ItemType Directory -Force -Path (Join-Path $payload 'tools\backends') | Out-Null
+Copy-Item -Path (Join-Path $repoRoot 'tools\backends\*') -Destination (Join-Path $payload 'tools\backends') -Recurse -Force
+
 
 $innosetupUrl = 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe'
 $innosetupInstaller = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
@@ -92,7 +101,7 @@ $installerScript = Join-Path $PSScriptRoot 'YandexMusicDownloaderPlus.iss'
 & $iscc "/DPayloadDir=$payload" "/DOutputDir=$OutputDirectory" $installerScript
 if ($LASTEXITCODE -ne 0) { throw "Компиляция установщика завершилась с кодом $LASTEXITCODE." }
 
-$setupExe = Join-Path $OutputDirectory 'YandexMusicDownloaderPlus-Setup-0.2.0-preview.2.exe'
+$setupExe = Join-Path $OutputDirectory 'YandexMusicDownloaderPlus-Setup-0.2.0-preview.3.exe'
 if (-not (Test-Path -LiteralPath $setupExe -PathType Leaf)) { throw "Итоговый EXE не найден: $setupExe" }
 
 # Install the just-built setup silently on the Windows runner and invoke the
@@ -111,7 +120,9 @@ $installedLauncher = Join-Path $smokeDir 'runtime\Scripts\yandex-music-downloade
 $installedPython = Join-Path $smokeDir 'runtime\python.exe'
 $installedScript = Join-Path $smokeDir 'YandexMusicDownloader.ps1'
 $installedInventory = Join-Path $smokeDir 'tools\source_inventory.py'
-foreach ($requiredFile in @($installedLauncher,$installedPython,$installedScript,$installedInventory)) {
+$installedBackend = Join-Path $smokeDir 'tools\backends\yandex_music_cli.py'
+$installedBackendModule = Join-Path $smokeDir 'tools\backends\yandex_music.py'
+foreach ($requiredFile in @($installedLauncher,$installedPython,$installedScript,$installedInventory,$installedBackend,$installedBackendModule)) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "После тестовой установки отсутствует обязательный файл: $requiredFile"
     }
@@ -123,6 +134,14 @@ if ($launcherExit -ne 0 -or $cliHelp -notmatch '--token' -or $cliHelp -notmatch 
     throw "Тест встроенного CLI завершился с кодом $launcherExit или не вернул ожидаемые параметры --token/--url.\n$cliHelp"
 }
 
+
+$env:YMDPLUS_BACKEND_DIR = Join-Path $smokeDir 'tools\backends'
+$directApiHelp = (& $installedPython -X utf8 -c "import os,sys; sys.path.insert(0, os.environ['YMDPLUS_BACKEND_DIR']); import yandex_music, yandex_music_cli; from Crypto.Cipher import AES; import mutagen; print('Direct API backend: OK')" 2>&1 | Out-String)
+$directApiExit = $LASTEXITCODE
+Remove-Item Env:\YMDPLUS_BACKEND_DIR -ErrorAction SilentlyContinue
+if ($directApiExit -ne 0 -or $directApiHelp -notmatch 'Direct API backend: OK') {
+    throw "Второй backend не импортируется (код $directApiExit): $directApiHelp"
+}
 
 $optionalHelp = (& $installedPython -c "import yt_dlp; import yt_dlp_plugins.extractor.yandex_music_v2; print('Optional Yandex Music backend: OK')" 2>&1 | Out-String)
 $optionalExit = $LASTEXITCODE
