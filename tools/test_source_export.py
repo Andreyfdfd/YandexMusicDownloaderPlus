@@ -10,10 +10,16 @@ from xml.etree import ElementTree as ET
 
 TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
-from source_inventory import direct_api_track_record, write_export_files  # noqa: E402
+from source_inventory import (\n    direct_api_track_record,\n    is_nonrecoverable_service_failure,\n    write_export_files,\n)  # noqa: E402
 
 
 def main() -> int:
+    assert is_nonrecoverable_service_failure("HTTP Error 403: Forbidden") is True
+    assert is_nonrecoverable_service_failure("HTTP 429 Too Many Requests") is True
+    assert is_nonrecoverable_service_failure("subscription required") is True
+    assert is_nonrecoverable_service_failure("HTTP 503 Service Unavailable") is False
+    assert is_nonrecoverable_service_failure("playlist-not-found") is False
+
     records = [
         {
             "SourceIndex": 1, "TrackId": "123", "TrackKey": "123:456",
