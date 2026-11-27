@@ -27,7 +27,7 @@ def main() -> int:
     parser.add_argument("--cancel-file", default="")
     args = parser.parse_args()
 
-    token = os.environ.get("YMDPLUS_BACKEND_TOKEN")
+    token = os.environ.pop("YMDPLUS_BACKEND_TOKEN", None)
     if not token:
         print(json.dumps({"success": False, "error": "YMDPLUS_BACKEND_TOKEN is not set"}, ensure_ascii=False))
         return 2
