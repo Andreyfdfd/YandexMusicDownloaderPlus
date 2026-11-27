@@ -1211,7 +1211,7 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
             $movedZero = Move-CandidateFilesToQuarantine -Queue $zeroDistinct -RootPath $script:outputDir -OnlyZeroLength $true
             Write-Host "Нулевые файлы безопасно перемещены в карантин (не удалены): $($movedZero.Moved). Папка: $($movedZero.Path)" -ForegroundColor Green
         } else {
-            $moveZero = Read-MenuChoice '0 — оставить; 1 — переместить эти файлы в карантин и повторить загрузку' @('0','1') '0'
+            $moveZero = Read-MenuChoice "0 - оставить; 1 - переместить эти файлы в карантин и повторить загрузку" @("0","1") "0"
             if ($moveZero -eq '1') {
                 $movedZero = Move-CandidateFilesToQuarantine -Queue $zeroDistinct -RootPath $script:outputDir -OnlyZeroLength $true
                 Write-Host "Перемещено в карантин: $($movedZero.Moved). Папка: $($movedZero.Path)" -ForegroundColor Green
@@ -1231,7 +1231,7 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
         if ($Automatic) {
             Write-Host 'Автоматическое восстановление не будет перезаписывать ненулевые файлы; они останутся на месте для проверки.' -ForegroundColor Gray
         } else {
-            $moveExisting = Read-MenuChoice '0 — сохранить и пропустить; 1 — перенести эти файлы в карантин и попытаться скачать заново' @('0','1') '0'
+            $moveExisting = Read-MenuChoice "0 - сохранить и пропустить; 1 - перенести эти файлы в карантин и попытаться скачать заново" @("0","1") "0"
             if ($moveExisting -eq '1') {
                 $movedExisting = Move-CandidateFilesToQuarantine -Queue $existingDistinct -RootPath $script:outputDir
                 Write-Host "Перемещено файлов в карантин: $($movedExisting.Moved). Папка: $($movedExisting.Path)" -ForegroundColor Green
@@ -2461,7 +2461,7 @@ try {
             Write-Host ''
             Write-Host ("Основной backend оставил проблемные композиции. Кандидатов по отчёту: {0}." -f $recoverableRows.Count) -ForegroundColor Yellow
             Write-Host 'Порядок автоматического восстановления: основной загрузчик уже проверен → независимый API-клиент → yt-dlp с браузерной сессией (последний способ запросит отдельное разрешение).' -ForegroundColor Gray
-            $autoFailoverChoice = Read-MenuChoice 'Попробовать резервные backend’ы для неудачных треков? (0 — нет, 1 — да)' @('0','1') '1'
+            $autoFailoverChoice = Read-MenuChoice "Попробовать резервные backend’ы для неудачных треков? (0 - нет, 1 - да)" @("0","1") "1"
             if ($autoFailoverChoice -eq '1') {
                 $recoveryPython = Find-PythonForDownloader -ExecutablePath $script:exePath -FallbackExecutablePath $defaultExe
                 Invoke-RetryFailedTracks -PreviousLogPath $script:logPath -PythonExe $recoveryPython -LogsDir $logsDir -RunTimestamp $script:timestamp -Automatic -PrimaryAlreadyTried
