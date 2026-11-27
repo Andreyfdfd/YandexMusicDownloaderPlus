@@ -1252,6 +1252,35 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
         }
     }
 
+    if ($Automatic) {
+        $suspectExisting = New-Object 'System.Collections.Generic.List[object]'
+        $suspectSeen = @{}
+        foreach ($candidate in $queue) {
+            $candidateFiles = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
+            foreach ($file in $candidateFiles) {
+                if ($file.Length -le 0) { continue }
+                $expectedMs = 0.0
+                try { $expectedMs = [double]$candidate.DurationMs } catch { }
+                if ($expectedMs -le 0) { continue }
+
+                $probe = Test-AudioDuration -PythonExe $PythonExe -AudioPath $file.FullName -ExpectedDurationMs $candidate.DurationMs
+                if (-not $probe.Success -or -not $probe.ValidAgainstMetadata) {
+                    if (-not $suspectSeen.ContainsKey([string]$candidate.TrackKey)) {
+                        $suspectSeen[[string]$candidate.TrackKey] = $true
+                        [void]$suspectExisting.Add($candidate)
+                    }
+                }
+                break
+            }
+        }
+
+        if ($suspectExisting.Count -gt 0) {
+            Write-Host ("Найдено непустых файлов, которые не прошли проверку длительности/читаемости: {0}. Переношу их в карантин, не удаляя, чтобы можно было восстановить проверенную версию." -f $suspectExisting.Count) -ForegroundColor Yellow
+            $movedSuspect = Move-CandidateFilesToQuarantine -Queue @($suspectExisting.ToArray()) -RootPath $script:outputDir
+            Write-Host ("В карантин перемещено файлов: {0}. Папка: {1}" -f $movedSuspect.Moved, $movedSuspect.Path) -ForegroundColor Green
+        }
+    }
+
     $existingCandidates = New-Object 'System.Collections.Generic.List[object]'
     foreach ($candidate in $queue) {
         $candidateFiles = @(Get-TrackAudioFiles -RootPath $script:outputDir -RelativeBasePath ([string]$candidate.RelativeBasePath))
