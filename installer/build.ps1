@@ -5,6 +5,19 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+$psTokens = $null
+$psErrors = $null
+[System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path (Split-Path -Parent $PSScriptRoot) 'YandexMusicDownloader.ps1'),
+    [ref]$psTokens,
+    [ref]$psErrors
+) | Out-Null
+if ($psErrors.Count -gt 0) {
+    $details = ($psErrors | ForEach-Object { "Line $($_.Extent.StartLineNumber): $($_.Message)" }) -join "`n"
+    throw "Синтаксическая проверка PowerShell-оболочки не пройдена:`n$details"
+}
+Write-Host 'PowerShell parser: OK'
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
 $payload = Join-Path $repoRoot 'artifacts\payload'
@@ -54,7 +67,7 @@ $embeddedPython = Join-Path $runtime 'python.exe'
 & $embeddedPython -c "import ymd.cli, yandex_music, mutagen, pip; print('Embedded Python runtime: OK')"
 if ($LASTEXITCODE -ne 0) { throw 'Проверка импортов встроенного Python завершилась ошибкой.' }
 
-& $embeddedPython -m py_compile (Join-Path $repoRoot 'tools\source_inventory.py') (Join-Path $repoRoot 'tools\backends\yandex_music.py') (Join-Path $repoRoot 'tools\backends\yandex_music_cli.py')
+& $embeddedPython -m py_compile (Join-Path $repoRoot 'tools\source_inventory.py') (Join-Path $repoRoot 'tools\backends\yandex_music.py') (Join-Path $repoRoot 'tools\backends\yandex_music_cli.py') (Join-Path $repoRoot 'tools\test_source_export.py')
 if ($LASTEXITCODE -ne 0) { throw 'Синтаксическая проверка вспомогательных Python-модулей не пройдена.' }
 & $embeddedPython (Join-Path $repoRoot 'tools\test_source_export.py')
 if ($LASTEXITCODE -ne 0) { throw 'Тесты сериализации экспорта библиотеки не пройдены.' }
