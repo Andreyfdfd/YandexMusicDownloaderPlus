@@ -400,7 +400,7 @@ def write_export_files(source_url, output_dir, prefix, records):
         f"{row.get('Artists') or 'Unknown Artist'} - {row.get('Title') or row.get('TrackTitle') or 'Unknown Title'}"
         for row in records
     ]
-    txt_path.write_text("\\n".join(text_lines) + ("\\n" if text_lines else ""), encoding="utf-8-sig")
+    txt_path.write_text("\n".join(text_lines) + ("\n" if text_lines else ""), encoding="utf-8-sig")
 
     root = ET.Element("playlist", {"title": prefix})
     for row in records:
