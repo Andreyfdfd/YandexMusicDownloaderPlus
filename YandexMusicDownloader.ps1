@@ -2408,7 +2408,7 @@ try {
     if ($actionChoice -eq '9') {
         $recoveryPython = Find-PythonForDownloader -ExecutablePath $script:exePath -FallbackExecutablePath $defaultExe
         $skipPrimary = -not $script:primaryBackendReady
-        Invoke-RetryFailedTracks -PreviousLogPath $script:resumeFromLog -PythonExe $recoveryPython -LogsDir $logsDir -RunTimestamp $script:timestamp -PrimaryAlreadyTried:$skipPrimary
+        Invoke-RetryFailedTracks -PreviousLogPath $script:resumeFromLog -PythonExe $recoveryPython -LogsDir $logsDir -RunTimestamp $script:timestamp -Automatic:$skipPrimary -PrimaryAlreadyTried:$skipPrimary
     } else {
         $script:sourceInventoryRecords = @()
         $script:previousSourceInventory = @()
