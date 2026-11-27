@@ -247,6 +247,27 @@ namespace DownloaderPlus
                 : (Brush)FindResource("WarningBrush");
         }
 
+        private void UpdateDownloader_Click(object sender, RoutedEventArgs e)
+        {
+            if (runner.IsRunning)
+            {
+                MessageBox.Show(this, "Сначала дождись завершения текущей операции.", "Backend занят",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            try
+            {
+                CaptureSettings();
+                StartBackend("update", "", settings.MusicPath, null);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Не удалось запустить обновление: " + ex.Message,
+                    "Ошибка обновления", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private void SaveSettings_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -357,11 +378,13 @@ namespace DownloaderPlus
                 DownloadProgress.IsIndeterminate = true;
                 ProgressCaption.Text = "Подготовка…";
                 DownloadStatus.Text = action == "export" ? "Экспорт списка композиций…" :
-                    action == "retry" ? "Восстановление треков…" : "Загрузка музыки…";
+                    action == "retry" ? "Восстановление треков…" :
+                    action == "update" ? "Обновление основного загрузчика…" : "Загрузка музыки…";
                 SetStatus("Выполняется", true);
-                WorkspaceTabs.SelectedIndex = 0;
+                WorkspaceTabs.SelectedIndex = action == "update" ? 4 : 0;
                 PageTitle.Text = action == "export" ? "Экспорт библиотеки" :
-                    action == "retry" ? "Восстановление" : "Загрузка музыки";
+                    action == "retry" ? "Восстановление" :
+                    action == "update" ? "Настройки и обновления" : "Загрузка музыки";
 
                 var runSettings = new AppSettings
                 {
