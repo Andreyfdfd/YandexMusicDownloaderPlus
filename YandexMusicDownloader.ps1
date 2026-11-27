@@ -1393,6 +1393,8 @@ function Find-Downloader([string]$PreferredPath) {
 }
 
 function Find-PythonForDownloader([string]$ExecutablePath, [string]$FallbackExecutablePath) {
+    $bundledPython = Join-Path $scriptRoot 'runtime\python.exe'
+    if (Test-Path -LiteralPath $bundledPython -PathType Leaf) { return $bundledPython }
     $candidates = New-Object System.Collections.Generic.List[string]
     foreach ($path in @($ExecutablePath, $FallbackExecutablePath)) {
         if ([string]::IsNullOrWhiteSpace($path)) { continue }
@@ -2053,46 +2055,67 @@ if ($actionChoice -eq '8' -or $actionChoice -eq '9') {
     if ($confirmed -ne '1') { exit 0 }
 }
 
-$script:exePath = Find-Downloader -PreferredPath $defaultExe
-if ($actionChoice -eq '2' -or $actionChoice -eq '3') {
-    $updated = Update-Downloader -ExecutablePath $script:exePath
-    if (-not $updated) {
+$script:exePath = $null
+$script:helpText = ''
+$script:supportsSkipExisting = $false
+$script:supportsEmbedCover = $false
+$script:supportsLyrics = $false
+$script:supportsDelay = $false
+$script:supportsTimeout = $false
+$script:supportsTries = $false
+$script:supportsRetryDelay = $false
+$script:supportsCoverResolution = $false
+$script:supportsForceMp3 = $false
+$script:supportsPathPattern = $false
+$supportsQuality = $false
+$supportsUrl = $false
+$supportsToken = $false
+$supportsDir = $false
+
+if ($actionChoice -ne '10') {
+    $script:exePath = Find-Downloader -PreferredPath $defaultExe
+    if ($actionChoice -eq '2' -or $actionChoice -eq '3') {
+        $updated = Update-Downloader -ExecutablePath $script:exePath
+        if (-not $updated) {
+            Read-Host 'Нажми Enter для выхода' | Out-Null
+            exit 1
+        }
+        if ($actionChoice -eq '2') {
+            Read-Host 'Обновление завершено. Нажми Enter для выхода' | Out-Null
+            exit 0
+        }
+        $script:exePath = Find-Downloader -PreferredPath $defaultExe
+    }
+
+    if ([string]::IsNullOrWhiteSpace($script:exePath) -or -not (Test-Path -LiteralPath $script:exePath -PathType Leaf)) {
+        Write-Host 'Не удалось найти yandex-music-downloader.exe.' -ForegroundColor Red
+        Write-Host "Ожидаемый исходный путь: $defaultExe"
+        Write-Host 'Попробуй сначала пункт 2 (обновить загрузчик) или поправь $defaultExe в начале файла.'
         Read-Host 'Нажми Enter для выхода' | Out-Null
         exit 1
     }
-    if ($actionChoice -eq '2') {
-        Read-Host 'Обновление завершено. Нажми Enter для выхода' | Out-Null
-        exit 0
-    }
-    $script:exePath = Find-Downloader -PreferredPath $defaultExe
+
+    $script:helpText = Get-DownloaderHelp -ExecutablePath $script:exePath
+    $script:supportsSkipExisting = $script:helpText -match '--skip-existing'
+    $script:supportsEmbedCover = $script:helpText -match '--embed-cover'
+    $script:supportsLyrics = $script:helpText -match '--lyrics-format'
+    $script:supportsDelay = $script:helpText -match '--delay'
+    $script:supportsTimeout = $script:helpText -match '--timeout'
+    $script:supportsTries = $script:helpText -match '--tries'
+    $script:supportsRetryDelay = $script:helpText -match '--retry-delay'
+    $script:supportsCoverResolution = $script:helpText -match '--cover-resolution'
+    $script:supportsForceMp3 = $script:helpText -match '--force-mp3'
+    $script:supportsPathPattern = $script:helpText -match '--path-pattern'
+    $supportsQuality = $script:helpText -match '--quality'
+    $supportsUrl = $script:helpText -match '--url'
+    $supportsToken = $script:helpText -match '--token'
+    $supportsDir = $script:helpText -match '--dir'
+
+    Write-Host ''
+    Write-Host "Загрузчик: $($script:exePath)" -ForegroundColor DarkGray
+} else {
+    Write-Host 'Режим экспорта не использует основной yandex-music-downloader.exe.' -ForegroundColor DarkGray
 }
-
-if ([string]::IsNullOrWhiteSpace($script:exePath) -or -not (Test-Path -LiteralPath $script:exePath -PathType Leaf)) {
-    Write-Host 'Не удалось найти yandex-music-downloader.exe.' -ForegroundColor Red
-    Write-Host "Ожидаемый исходный путь: $defaultExe"
-    Write-Host 'Попробуй сначала пункт 2 (обновить загрузчик) или поправь $defaultExe в начале файла.'
-    Read-Host 'Нажми Enter для выхода' | Out-Null
-    exit 1
-}
-
-$script:helpText = Get-DownloaderHelp -ExecutablePath $script:exePath
-$script:supportsSkipExisting = $script:helpText -match '--skip-existing'
-$script:supportsEmbedCover = $script:helpText -match '--embed-cover'
-$script:supportsLyrics = $script:helpText -match '--lyrics-format'
-$script:supportsDelay = $script:helpText -match '--delay'
-$script:supportsTimeout = $script:helpText -match '--timeout'
-$script:supportsTries = $script:helpText -match '--tries'
-$script:supportsRetryDelay = $script:helpText -match '--retry-delay'
-$script:supportsCoverResolution = $script:helpText -match '--cover-resolution'
-$script:supportsForceMp3 = $script:helpText -match '--force-mp3'
-$script:supportsPathPattern = $script:helpText -match '--path-pattern'
-$supportsQuality = $script:helpText -match '--quality'
-$supportsUrl = $script:helpText -match '--url'
-$supportsToken = $script:helpText -match '--token'
-$supportsDir = $script:helpText -match '--dir'
-
-Write-Host ''
-Write-Host "Загрузчик: $($script:exePath)" -ForegroundColor DarkGray
 if ($actionChoice -ne '10' -and -not $supportsSkipExisting) {
     Write-Host 'В установленной версии не найден --skip-existing.' -ForegroundColor Red
     Write-Host 'Чтобы не нарушить главное условие (не скачивать дубликаты), запуск отменён. Обнови загрузчик через пункт 2.' -ForegroundColor Yellow
