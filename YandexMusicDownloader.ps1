@@ -2293,7 +2293,7 @@ if ($actionChoice -ne '10') {
         switch ($guiQuality) {
             'mp3' {
                 if ($script:supportsForceMp3) { $formatChoice = '1' }
-                else { $formatChoice = '2' }
+                else { $formatChoice = '1' }
             }
             'flac' { $formatChoice = if ($script:supportsForceMp3) { '3' } else { '2' } }
             default { $formatChoice = if ($script:supportsForceMp3) { '2' } else { '1' } }
