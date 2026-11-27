@@ -168,6 +168,7 @@ def _shape_track(t: dict, default_album: str = '') -> dict:
         'artist': (', '.join(a.get('name', '') for a in (t.get('artists') or []) if a.get('name'))
                    or album.get('title', '')),
         'album': album.get('title', ''),
+        'albumVersion': album.get('version') or '',
         'albumArtist': ', '.join(a.get('name', '') for a in (album.get('artists') or []) if a.get('name')),
         'year': album.get('year') or '',
         'genre': album.get('genre') or '',
