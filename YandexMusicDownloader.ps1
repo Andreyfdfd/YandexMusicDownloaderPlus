@@ -739,7 +739,24 @@ function Write-SourceStatusReport(
         }
     }
 
-    foreach ($failure in $failures.Values) { [void]$rows.Add($failure) }
+    # Remove only failures that a later backend positively recovered and
+    # validated. A nonzero file by itself is not enough to clear a failure.
+    $recoveredKeys = @{}
+    $recoveryResultsPath = Join-Path $LogsDir "recovery-results-$RunTimestamp.csv"
+    if (Test-Path -LiteralPath $recoveryResultsPath -PathType Leaf) {
+        foreach ($recovered in @(Import-Csv -LiteralPath $recoveryResultsPath -ErrorAction SilentlyContinue)) {
+            if ($recovered.Status -ne 'Успешно восстановлен') { continue }
+            $recoveredKey = [string]$recovered.TrackKey
+            if ([string]::IsNullOrWhiteSpace($recoveredKey)) { $recoveredKey = [string]$recovered.TrackId }
+            if (-not [string]::IsNullOrWhiteSpace($recoveredKey)) { $recoveredKeys[$recoveredKey] = $true }
+        }
+    }
+    foreach ($failure in $failures.Values) {
+        $failureKey = [string]$failure.TrackKey
+        if ([string]::IsNullOrWhiteSpace($failureKey)) { $failureKey = [string]$failure.TrackId }
+        if ($recoveredKeys.ContainsKey($failureKey)) { continue }
+        [void]$rows.Add($failure)
+    }
     foreach ($errorLine in @(Get-ErrorLines -Text $LogText)) {
         [void]$rows.Add([pscustomobject]@{
             Category = 'Общая ошибка загрузки'
