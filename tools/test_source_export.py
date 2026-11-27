@@ -118,7 +118,7 @@ def main() -> int:
 
         plain_lines = Path(manifest["files"]["txt"]).read_text(encoding="utf-8-sig").splitlines()
         assert plain_lines == [
-            "Группа, Исполнитель - Космическая музыка",
+            "Группа, Исполнитель - Космическая музыка — Remaster",
             "Artist - Night Drive",
         ]
 
