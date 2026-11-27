@@ -2420,6 +2420,27 @@ try {
         }
     }
 
+    if ($script:sourceInventorySucceeded -and @('1','3') -contains $actionChoice) {
+        $preFailoverLog = Get-Content -LiteralPath $script:logPath -Raw -ErrorAction SilentlyContinue
+        $preFailoverStatus = Write-SourceStatusReport -CurrentInventory $script:sourceInventoryRecords -PreviousInventory $script:previousSourceInventory -HasPreviousInventory $script:hasPreviousSourceInventory -SourceUrl $script:sourceUrl -OutputDir $script:outputDir -LogText $preFailoverLog -LogsDir $logsDir -RunTimestamp $script:timestamp -BaselinePath $script:sourceBaselinePath
+        $preRows = @(Import-Csv -LiteralPath $preFailoverStatus.ReportPath -ErrorAction SilentlyContinue | Where-Object { $_.Category -eq 'Не удалось скачать' })
+        $recoverableRows = @($preRows | Where-Object { -not (Test-NonRecoverableServiceFailure -Details ([string]$_.Details)) })
+        $lastExitCode = if ($null -ne $lastPass) { [int]$lastPass.ExitCode } else { 0 }
+        $globalFailureIsRecoverable = ($lastExitCode -ne 0) -and -not (Test-NonRecoverableServiceFailure -Details ([string]$lastPass.Text))
+        if ($recoverableRows.Count -gt 0 -or $globalFailureIsRecoverable) {
+            Write-Host ''
+            Write-Host ("Основной backend оставил проблемные композиции. Кандидатов по отчёту: {0}." -f $recoverableRows.Count) -ForegroundColor Yellow
+            Write-Host 'Порядок автоматического восстановления: основной загрузчик уже проверен → независимый API-клиент → yt-dlp с браузерной сессией (последний способ запросит отдельное разрешение).' -ForegroundColor Gray
+            $autoFailoverChoice = Read-MenuChoice 'Попробовать резервные backend’ы для неудачных треков? (0 — нет, 1 — да)' @('0','1') '1'
+            if ($autoFailoverChoice -eq '1') {
+                $recoveryPython = Find-PythonForDownloader -ExecutablePath $script:exePath -FallbackExecutablePath $defaultExe
+                Invoke-RetryFailedTracks -PreviousLogPath $script:logPath -PythonExe $recoveryPython -LogsDir $logsDir -RunTimestamp $script:timestamp -Automatic -PrimaryAlreadyTried
+                $postFailoverLog = Get-Content -LiteralPath $script:logPath -Raw -ErrorAction SilentlyContinue
+                [void](Write-SourceStatusReport -CurrentInventory $script:sourceInventoryRecords -PreviousInventory $script:previousSourceInventory -HasPreviousInventory $script:hasPreviousSourceInventory -SourceUrl $script:sourceUrl -OutputDir $script:outputDir -LogText $postFailoverLog -LogsDir $logsDir -RunTimestamp $script:timestamp -BaselinePath $script:sourceBaselinePath)
+            }
+        }
+    }
+
     $allLogText = Get-Content -LiteralPath $script:logPath -Raw -ErrorAction SilentlyContinue
     $otherErrorSummary = @(Get-ErrorLines -Text $allLogText)
     $allUnavailableEntries = @(Get-UnavailableTrackEntries -Text $allLogText)
