@@ -10,7 +10,7 @@ from xml.etree import ElementTree as ET
 
 TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
-from source_inventory import write_export_files  # noqa: E402
+from source_inventory import direct_api_track_record, write_export_files  # noqa: E402
 
 
 def main() -> int:
@@ -37,6 +37,28 @@ def main() -> int:
             "DurationMs": 190000, "DurationSeconds": 190.0,
         },
     ]
+
+    direct_record = direct_api_track_record(
+        {
+            "trackId": "900",
+            "albumId": "901",
+            "title": "Ночной маршрут",
+            "artist": "Исполнитель",
+            "album": "Сборник",
+            "albumArtist": "Исполнитель",
+            "trackNum": 3,
+            "discNum": 1,
+            "year": 2026,
+            "isrc": "RUA1A2600009",
+            "durationMs": 201500,
+        },
+        1,
+    )
+    assert direct_record["TrackId"] == "900"
+    assert direct_record["TrackUrl"].endswith("/album/901/track/900")
+    assert direct_record["ISRC"] == "RUA1A2600009"
+    assert direct_record["RelativeBasePath"] == "Исполнитель/Сборник/03 - Ночной маршрут"
+    assert "\\" not in direct_record["RelativeBasePath"]
 
     with tempfile.TemporaryDirectory(prefix="ymdp-export-test-") as temp_dir:
         manifest = write_export_files(
