@@ -1,78 +1,67 @@
 # Changelog
 
+## 0.3.0 — 2026-11-27
+
+- Added a Russian-language WPF desktop application for Windows with download, metadata export, recovery, logs and settings pages.
+- Added live backend output, parsed track progress, cancellation marker support and process-tree cleanup from the GUI.
+- Kept the PowerShell console workflow as a secondary launch option; both interfaces share the same engine, logs, settings and DPAPI token store.
+- Added GUI headless mode so the desktop client invokes the existing PowerShell orchestration without interactive prompts.
+- Added DPAPI token management to the GUI using the same per-user file as the PowerShell client.
+- Changed the bundled Go launcher integration so the primary downloader token is injected into Python after process start rather than being included in the child process command line.
+- Added paginated artist-track retrieval to the independent API backend.
+- Added automatic duration/readability checks for existing nonzero recovery files; suspect files are moved to quarantine, never deleted, before recovery.
+- Added installer packaging, desktop/start-menu shortcuts and Windows CI smoke tests for the WPF application and its DPAPI round-trip.
+- Updated known-issues documentation to distinguish implemented protections from limits that still require live account testing.
+
 ## 0.2.0-preview.3 — 2026-11-27
 
-- Added a metadata-only library export (CSV, full JSON, TXT, XML) with title, artists, album, duration, ISRC, source position and track URL/IDs.
+- Added metadata-only library export (CSV, full JSON, TXT, XML) with title, artists, album, duration, ISRC, source position and track URL/IDs.
 - Added an independent MIT-licensed Yandex Music API client as a second backend and as a fallback for source inventory/export when the primary client has incompatible URL/model handling.
 - Added per-track failover flow: primary downloader → independent API backend → optional browser-session yt-dlp backend after explicit consent.
 - Kept account/access denials, rate limiting, unavailable tracks, subscription/region requirements and DRM as terminal conditions; failover is not used to bypass them.
 - Added offline export serialization tests, service-denial classifier tests, PowerShell parser validation and Windows installer smoke checks for the new backend.
 
-
 ## 0.2.0-preview.2 — 2026-11-09
 
-- Fix the Inno Setup default Music path using the current Windows user's USERPROFILE environment variable.
-- Invoke the upstream downloader's registered `ymd.cli:main` entry point from the embedded launcher and force UTF-8 mode.
-- Add a Windows smoke test that silently installs the setup, checks required files, runs the bundled CLI help, and confirms the Music path setting is saved.
-- Use a separate preview.2 release rather than reusing the first test binary.
-
+- Fixed Inno Setup default Music path using the current Windows user's USERPROFILE.
+- Invoked the upstream downloader's registered ymd.cli:main entry point from the embedded launcher and forced UTF-8 mode.
+- Added a Windows smoke test that silently installs the setup, checks required files, runs the bundled CLI help, and confirms the Music path setting is saved.
 
 ## 0.2.0-preview.1 — 2026-11-09
 
-- Added a separate Windows installer built on Windows CI with a bundled portable CPython 3.14 runtime and the primary Yandex Music downloader.
-- Added a native launcher that invokes the embedded Python module without depending on a system Python installation or hard-coded interpreter paths.
-- Added selectable full/compact/custom installation types, optional yt-dlp preinstallation, optional documentation, desktop shortcut, and a selectable Music directory.
-- Defaulted the music destination to the current Windows user's Music folder and moved its configuration to the user's AppData profile.
-- Removed the personal liked-playlist URL from the release defaults; the source URL is now requested explicitly.
-- Added a separate GitHub pre-release workflow and SHA-256 checksum for the installer.
-
+- Added a separate Windows installer with a bundled portable CPython 3.14 runtime and primary downloader.
+- Added a native launcher independent of system Python.
+- Added full/compact/custom install types, optional yt-dlp, docs, desktop shortcut and selectable Music directory.
+- Removed the personal liked-playlist URL from release defaults.
 
 ## 0.1.6 — 2026-10-28
 
-- Added source inventory snapshots and `library-status-*.csv` reports to list tracks removed from the same source since the previous snapshot and tracks known to have failed during a run.
-- Added menu option 9 to build a queue of failed tracks from a previous log, retry each track individually through the main downloader, and optionally try `yt-dlp` as a fallback.
-- Added duration checks using the downloader's installed Mutagen dependency; short or unverified fallback files are kept in staging instead of being silently added to the library.
-- Added a Python helper that reads the DPAPI-decoded token from a temporary process environment variable and never writes it to the inventory file or logs.
-- Applied the selected request delay to source-inventory batches and made a subsequent option-9 run continue only unresolved candidates from its previous recovery queue.
+- Added source inventory snapshots and library-status CSV.
+- Added sequential recovery of failed tracks with optional yt-dlp fallback.
+- Added duration checks and staging for unverified files.
 
 ## 0.1.5 — 2026-10-28
 
-- Added menu option 8 to select a previous `download-*.log` and retry the recorded URL/output folder, defaulting to the last observed quality.
-- Preserved `--skip-existing` for retry runs and added an explicit, optional quarantine move for zero-length audio files; no files are automatically deleted.
-- Logged the source run used for each retry.
+- Added retry of a prior download using URL and destination from its log.
+- Preserved skip-existing; added quarantine for zero-length files.
 
 ## 0.1.4 — 2026-10-28
 
-- Added a per-pass `file-outcomes-*.csv` report listing observed status for every path reported by the downloader and every new/changed audio file found in the output folder.
-- Added before/after existence and size, downloader-reported flag, and last-write time to each file outcome row.
+- Added per-pass file-outcomes CSV.
 
 ## 0.1.3 — 2026-10-28
 
-- Added before/after snapshots of audio files for each download pass, reporting created, modified, and zero-length files.
-- Parsed distinct audio paths reported by the downloader and flagged paths that are missing or unchanged after the pass.
-- Appended filesystem result summaries to the log while explicitly avoiding guesses about silently skipped existing files.
+- Added before/after audio snapshots and summaries.
 
 ## 0.1.2 — 2026-10-28
 
-- Replaced `ConvertTo-SecureString` / `ConvertFrom-SecureString` calls for token storage with a small wrapper around the native Windows DPAPI API.
-- Kept the existing DPAPI hex payload format for backward compatibility with the saved token file.
-- Avoided storing the token as plaintext to work around a PowerShell Security module loading failure.
-- Added menu option 6 to verify saved-token decryption offline without displaying the secret or starting a download.
-- Added menu option 7 to test token decrypt/encrypt/file/reload round-trip in a temporary file without changing the saved token or contacting the network.
+- Added native Windows DPAPI storage compatible with the existing token file.
+- Added offline saved-token decryption and round-trip checks.
 
 ## 0.1.1 — 2026-10-28
 
-- Fixed classification of upstream `не доступен для скачивания` messages.
-- Added a machine-readable `unavailable-*.csv` report with playlist position, track label, attempts, pass names, and raw messages.
-- Updated end-of-pass output to warn when tracks are unavailable instead of reporting an unqualified success.
-- Kept unavailable-track reports separate from general errors so unavailable-only runs do not automatically retry the entire playlist.
-- Expanded `errors-*.txt` with summary counts and the CSV report path.
-- Added menu option 5 to rebuild diagnostics from an existing log without downloading music or requesting a token.
+- Added unavailable CSV and menu option 5 for offline log analysis.
 
 ## 0.1.0 — 2026-10-28
 
-- Initial repository snapshot of the locally tested Downloader Plus wrapper.
-- Added persistent token storage through Windows DPAPI.
-- Enabled unbuffered downloader output for live terminal progress and logging.
-- Preserved skip-existing behavior and the existing music path pattern.
-- Documented the initial diagnostics limitations.
+- Initial repository snapshot of the Downloader Plus wrapper.
