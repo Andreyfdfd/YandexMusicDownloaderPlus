@@ -1565,8 +1565,7 @@ function Get-ReportedAudioPaths([string]$Text) {
     # Observed output: [1/1] [AAC 192kbps] Загружается D:\...\Track.m4a
     $pattern = '(?i)^\s*(?:\[\d+\s*/\s*\d+\]\s*)?(?:\[[^\]]+\]\s*)*(?:Загружается|Скачивается|Downloading|Download(?:ing)?)\s+(?<Path>.+\.' + $extensionsPattern + ')\s*$'
 
-    $parseText = Repair-LegacyConsoleEncoding -Text $Text
-    foreach ($line in [regex]::Split($parseText, '\r?\n')) {
+    foreach ($line in [regex]::Split($Text, '\r?\n')) {
         if ($line -match $pattern) {
             $path = $Matches['Path'].Trim().Trim('"')
             try { $path = [System.IO.Path]::GetFullPath($path) } catch { }
@@ -1873,7 +1872,8 @@ function Get-UnavailableTrackEntries([string]$Text) {
     # [1866/6737] Трек Didier Marouani, Space - Just Blue не доступен для скачивания
     $pattern = '(?i)^\s*\[(?<Index>\d+)\s*/\s*(?<Total>\d+)\]\s*(?:Трек\s+)?(?<Track>.+?)\s+(?<Message>не\s+доступен\s+для\s+скачивания|недоступен\s+для\s+скачивания|недоступна\s+для\s+скачивания|недоступно\s+для\s+скачивания|not\s+available\s+for\s+download|unavailable\s+for\s+download)\s*$'
 
-    foreach ($line in [regex]::Split($Text, '\r?\n')) {
+    $parseText = Repair-LegacyConsoleEncoding -Text $Text
+    foreach ($line in [regex]::Split($parseText, '\r?\n')) {
         if ($line -match '^\s*=+\s*(?<Pass>.+?)\s*=+\s*$') {
             $currentPass = $Matches['Pass'].Trim()
             continue
