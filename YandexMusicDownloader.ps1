@@ -1927,29 +1927,48 @@ function Repair-LegacyConsoleEncoding([string]$Text) {
 function Get-UnavailableTrackEntries([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
 
-    $entries = New-Object 'System.Collections.Generic.List[object]'
-    $currentPass = ''
-    # Known output observed in live runs:
-    # [1866/6737] Трек Didier Marouani, Space - Just Blue не доступен для скачивания
-    $pattern = '(?i)^\s*\[(?<Index>\d+)\s*/\s*(?<Total>\d+)\]\s*(?:Трек\s+)?(?<Track>.+?)\s+(?<Message>не\s+доступен\s+для\s+скачивания|недоступен\s+для\s+скачивания|недоступна\s+для\s+скачивания|недоступно\s+для\s+скачивания|not\s+available\s+for\s+download|unavailable\s+for\s+download)\s*$'
-
-    $parseText = Repair-LegacyConsoleEncoding -Text $Text
-    foreach ($line in [regex]::Split($parseText, '\r?\n')) {
-        if ($line -match '^\s*=+\s*(?<Pass>.+?)\s*=+\s*$') {
-            $currentPass = $Matches['Pass'].Trim()
-            continue
+    # Logs from older CLI/PowerShell combinations can contain UTF-8 text that
+    # was decoded as CP866 and then saved as UTF-8. Try untouched and repaired
+    # text independently so a failed encoding repair cannot hide the entries.
+    $candidateTexts = New-Object 'System.Collections.Generic.List[string]'
+    [void]$candidateTexts.Add($Text)
+    $repaired = Repair-LegacyConsoleEncoding -Text $Text
+    if (-not [string]::IsNullOrWhiteSpace($repaired) -and $repaired -ne $Text) {
+        [void]$candidateTexts.Add($repaired)
+    }
+    try {
+        $cp866 = [System.Text.Encoding]::GetEncoding(866)
+        $utf8 = [System.Text.Encoding]::UTF8
+        $alternateRepair = $utf8.GetString($cp866.GetBytes($Text))
+        if (-not [string]::IsNullOrWhiteSpace($alternateRepair) -and
+            -not ($candidateTexts -contains $alternateRepair)) {
+            [void]$candidateTexts.Add($alternateRepair)
         }
-        if ($line -match $pattern) {
-            [void]$entries.Add([pscustomobject]@{
-                TrackIndex    = [int]$Matches['Index']
-                PlaylistTotal = [int]$Matches['Total']
-                Track         = $Matches['Track'].Trim()
-                Message       = $line.Trim()
-                Pass          = $currentPass
-            })
+    } catch { }
+
+    $pattern = '(?i)^\s*\[(?<Index>\d+)\s*/\s*(?<Total>\d+)\]\s*(?:Трек\s+)?(?<Track>.+?)\s+(?<Message>не\s+доступен\s+для\s+скачивания|недоступен\s+для\s+скачивания|недоступна\s+для\s+скачивания|недоступно\s+для\s+скачивания|not\s+available\s+for\s+download|unavailable\s+for\s+download)\s*$'
+    $entriesByKey = @{}
+    foreach ($candidateText in $candidateTexts) {
+        $currentPass = ''
+        foreach ($line in [regex]::Split($candidateText, '\r?\n')) {
+            if ($line -match '^\s*=+\s*(?<Pass>.+?)\s*=+\s*$') {
+                $currentPass = $Matches['Pass'].Trim()
+                continue
+            }
+            if ($line -match $pattern) {
+                $entry = [pscustomobject]@{
+                    TrackIndex    = [int]$Matches['Index']
+                    PlaylistTotal = [int]$Matches['Total']
+                    Track         = $Matches['Track'].Trim()
+                    Message       = $line.Trim()
+                    Pass          = $currentPass
+                }
+                $entryKey = '{0}/{1}|{2}' -f $entry.TrackIndex, $entry.PlaylistTotal, $entry.Track
+                if (-not $entriesByKey.ContainsKey($entryKey)) { $entriesByKey[$entryKey] = $entry }
+            }
         }
     }
-    return @($entries.ToArray())
+    return @($entriesByKey.Values | Sort-Object TrackIndex)
 }
 
 function Get-ErrorLines([string]$Text) {
