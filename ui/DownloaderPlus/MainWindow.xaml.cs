@@ -289,7 +289,7 @@ namespace DownloaderPlus
                 string title = CsvValue(row, "TrackTitle");
                 if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(title)) continue;
                 var item = new FailedTrack { TrackTitle = title, Artists = CsvValue(row, "Artists"), AlbumTitle = CsvValue(row, "AlbumTitle"), TrackUrl = url, RelativeBasePath = CsvValue(row, "RelativeBasePath"), Details = CsvValue(row, "Details"), TrackKey = CsvValue(row, "TrackKey") };
-                string key = item.TrackKey ?? url;
+                string key = string.IsNullOrWhiteSpace(item.TrackKey) ? url : item.TrackKey;
                 if (!failures.ContainsKey(key)) failures[key] = item;
             }
 
@@ -300,7 +300,7 @@ namespace DownloaderPlus
                 string title = CsvValue(row, "TrackTitle");
                 if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(title)) continue;
                 var item = new FailedTrack { TrackTitle = title, Artists = CsvValue(row, "Artists"), AlbumTitle = CsvValue(row, "AlbumTitle"), TrackUrl = url, RelativeBasePath = CsvValue(row, "RelativeBasePath"), Details = CsvValue(row, "Details"), TrackKey = CsvValue(row, "TrackKey") };
-                string key = item.TrackKey ?? url;
+                string key = string.IsNullOrWhiteSpace(item.TrackKey) ? url : item.TrackKey;
                 if (!failures.ContainsKey(key)) failures[key] = item;
             }
 
@@ -340,7 +340,6 @@ namespace DownloaderPlus
                 var consent = MessageBox.Show(this, "Разрешить yt-dlp использовать cookies выбранного браузера для этой повторной попытки? Это может дать локальному процессу доступ к браузерной сессии.", "Согласие на браузерную сессию", MessageBoxButton.YesNo, MessageBoxImage.Warning);
                 browserConsentForCurrentRun = consent == MessageBoxResult.Yes;
             } else browserConsentForCurrentRun = false;
-            SourceUrlBox.Text = track.TrackUrl;
             StartBackend("download", track.TrackUrl, settings.MusicPath, null);
         }
 
