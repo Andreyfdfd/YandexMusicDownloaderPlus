@@ -49,8 +49,11 @@ namespace DownloaderPlus.Services
             };
         }
 
+        public static string LastLoadWarning { get; private set; }
+
         public static AppSettings Load()
         {
+            LastLoadWarning = null;
             if (!File.Exists(SettingsPath))
                 return CreateDefault();
 
@@ -59,8 +62,20 @@ namespace DownloaderPlus.Services
                 using (var stream = File.OpenRead(SettingsPath))
                     return (AppSettings)new DataContractSerializer(typeof(AppSettings)).ReadObject(stream) ?? CreateDefault();
             }
-            catch
+            catch (Exception ex)
             {
+                string backupPath = SettingsPath + ".corrupt-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".bak";
+                try
+                {
+                    File.Copy(SettingsPath, backupPath, false);
+                    LastLoadWarning = "Файл настроек повреждён. Сохранена резервная копия: " + backupPath +
+                        Environment.NewLine + "Причина: " + ex.Message;
+                }
+                catch (Exception backupEx)
+                {
+                    LastLoadWarning = "Файл настроек повреждён, но резервную копию создать не удалось: " + backupEx.Message +
+                        Environment.NewLine + "Исходный файл оставлен без изменений.";
+                }
                 return CreateDefault();
             }
         }
@@ -111,8 +126,21 @@ namespace DownloaderPlus.Services
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "YandexMusicDownloaderPlus",
                 "music-path.txt");
-            Directory.CreateDirectory(Path.GetDirectoryName(config));
-            File.WriteAllText(config, (MusicPath ?? "").Trim() + Environment.NewLine);
+            string directory = Path.GetDirectoryName(config);
+            Directory.CreateDirectory(directory);
+            string temp = config + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllText(temp, (MusicPath ?? "").Trim() + Environment.NewLine);
+                if (File.Exists(config))
+                    File.Replace(temp, config, null);
+                else
+                    File.Move(temp, config);
+            }
+            finally
+            {
+                if (File.Exists(temp)) File.Delete(temp);
+            }
         }
     }
 }

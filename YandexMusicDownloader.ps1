@@ -1,6 +1,16 @@
 ﻿#requires -Version 5.1
 $ErrorActionPreference = 'Stop'
 
+# Force UTF-8 for PowerShell output when redirected by the WPF host or written to logs.
+# Windows PowerShell 5.1 otherwise uses the active OEM code page for native/console output,
+# which corrupts Cyrillic text before the GUI's UTF-8 decoder receives it.
+try {
+    $script:utf8ConsoleEncoding = [System.Text.UTF8Encoding]::new($false)
+    [Console]::OutputEncoding = $script:utf8ConsoleEncoding
+    [Console]::InputEncoding = $script:utf8ConsoleEncoding
+    $OutputEncoding = $script:utf8ConsoleEncoding
+} catch { }
+
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $bundledDownloader = Join-Path $scriptRoot 'runtime\Scripts\yandex-music-downloader.exe'
 if (Test-Path -LiteralPath $bundledDownloader -PathType Leaf) {
@@ -891,9 +901,39 @@ function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [st
         $hasOriginalInventory = $inventory.Count -gt 0
     } else {
         Write-Host 'У выбранного запуска нет сохранённого снимка треков. Пытаюсь прочитать состав источника сейчас; привязка старых позиций может оказаться невозможной.' -ForegroundColor Yellow
-        $snapshot = Invoke-SourceInventory -SourceUrl $script:resumeSettings.Url -PythonExe $PythonExe -DelaySeconds $DelaySeconds
-        if ($snapshot.Success) { $inventory = @($snapshot.Tracks) }
-        else { Write-Host "Не удалось получить состав источника: $($snapshot.Error)" -ForegroundColor Yellow }
+        # The source URL must come from the selected historical log, not current settings.
+        # This prevents rebuilding inventory for an unrelated playlist/album.
+        $oldLogTextForSource = Get-Content -LiteralPath $PreviousLogPath -Raw -ErrorAction SilentlyContinue
+        $sourceUrlMatch = [regex]::Match([string]$oldLogTextForSource, '(?im)^\s*(?:Ссылка|URL)\s*:\s*(?<Url>https?://\S+)')
+        $historicalSourceUrl = if ($sourceUrlMatch.Success) { $sourceUrlMatch.Groups['Url'].Value.Trim() } else { [string]$script:resumeSettings.Url }
+        if ([string]::IsNullOrWhiteSpace($historicalSourceUrl)) {
+            Write-Host 'В выбранном журнале нет ссылки на исходный плейлист/альбом, а в текущих настройках ссылка пустая. Снимок не запрашивался.' -ForegroundColor Yellow
+        } else {
+            $snapshot = Invoke-SourceInventory -SourceUrl $historicalSourceUrl -PythonExe $PythonExe -DelaySeconds $DelaySeconds
+            if ($snapshot.Success) { $inventory = @($snapshot.Tracks) }
+            else { Write-Host "Не удалось получить состав источника: $($snapshot.Error)" -ForegroundColor Yellow }
+        }
+    }
+
+    # Build lookup indexes once. The previous nested Where-Object lookups scanned
+    # the full 6k+ inventory for every failed track and could make Retry appear stalled.
+    $inventoryByIndex = @{}
+    $inventoryByLabel = @{}
+    $inventoryByPath = @{}
+    foreach ($inventoryItem in $inventory) {
+        $indexKey = [string]$inventoryItem.SourceIndex
+        if (-not [string]::IsNullOrWhiteSpace($indexKey) -and -not $inventoryByIndex.ContainsKey($indexKey)) {
+            $inventoryByIndex[$indexKey] = $inventoryItem
+        }
+        $labelKey = ([string]$inventoryItem.TrackLabel).Trim().ToLowerInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($labelKey) -and -not $inventoryByLabel.ContainsKey($labelKey)) {
+            $inventoryByLabel[$labelKey] = $inventoryItem
+        }
+        $expectedBase = Join-Path $OutputDir ([string]$inventoryItem.RelativeBasePath -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+        $normalizedPath = Get-NormalizedAudioBasePath -Path $expectedBase
+        if (-not [string]::IsNullOrWhiteSpace($normalizedPath) -and -not $inventoryByPath.ContainsKey($normalizedPath)) {
+            $inventoryByPath[$normalizedPath] = $inventoryItem
+        }
     }
 
     if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
@@ -908,10 +948,12 @@ function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [st
     foreach ($entry in @(Get-UnavailableTrackEntries -Text $oldLogText)) {
         $track = $null
         if ($hasOriginalInventory -and $inventory.Count -eq [int]$entry.PlaylistTotal) {
-            $track = @($inventory | Where-Object { [int]$_.SourceIndex -eq [int]$entry.TrackIndex } | Select-Object -First 1)[0]
+            $indexKey = [string]$entry.TrackIndex
+            if ($inventoryByIndex.ContainsKey($indexKey)) { $track = $inventoryByIndex[$indexKey] }
         }
         if ($null -eq $track) {
-            $track = @($inventory | Where-Object { $_.TrackLabel -and $_.TrackLabel.Trim() -ieq $entry.Track.Trim() } | Select-Object -First 1)[0]
+            $labelKey = ([string]$entry.Track).Trim().ToLowerInvariant()
+            if ($inventoryByLabel.ContainsKey($labelKey)) { $track = $inventoryByLabel[$labelKey] }
         }
         Add-RetryCandidate -Queue $queue -Seen $seen -TrackRecord $track -Details ([string]$entry.Message) -FallbackLabel ([string]$entry.Track)
     }
@@ -921,10 +963,7 @@ function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [st
             if ($outcome.Status -notin @('Не найден после прохода','Нулевой размер','Изменение не обнаружено')) { continue }
             $pathKey = Get-NormalizedAudioBasePath -Path ([string]$outcome.Path)
             $track = $null
-            foreach ($item in $inventory) {
-                $expectedBase = Join-Path $OutputDir ([string]$item.RelativeBasePath -replace '/', [System.IO.Path]::DirectorySeparatorChar)
-                if ((Get-NormalizedAudioBasePath -Path $expectedBase) -eq $pathKey) { $track = $item; break }
-            }
+            if ($inventoryByPath.ContainsKey($pathKey)) { $track = $inventoryByPath[$pathKey] }
             Add-RetryCandidate -Queue $queue -Seen $seen -TrackRecord $track -Details ("$($outcome.Status): $($outcome.Path)") -FallbackLabel ([System.IO.Path]::GetFileNameWithoutExtension([string]$outcome.Path))
         }
     }
@@ -1205,6 +1244,28 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
     }
 
     if ($queue.Count -eq 0) {
+        # Diagnostic information is written to the current run log, even when
+        # retry cannot construct candidates from the selected historical log.
+        if (-not [string]::IsNullOrWhiteSpace($script:logPath)) {
+            $stampMatch = [regex]::Match([System.IO.Path]::GetFileName($PreviousLogPath), '^download-(?<Stamp>\d{8}-\d{6})\.log$')
+            $oldStamp = $stampMatch.Groups['Stamp'].Value
+            $diagnosticPaths = @(
+                (Join-Path $LogsDir "source-inventory-$oldStamp.csv"),
+                (Join-Path $LogsDir "library-status-$oldStamp.csv"),
+                (Join-Path $LogsDir "retry-queue-$oldStamp.csv"),
+                (Join-Path $LogsDir "recovery-results-$oldStamp.csv")
+            )
+            @(
+                ''
+                'Диагностика пустой очереди восстановления:'
+                ('Источник лога: {0}' -f $PreviousLogPath)
+                ('Ошибка очереди: {0}' -f [string]$queueResult.Error)
+                ('Снимок источника в памяти: {0} записей' -f $sourceInventoryCount)
+                foreach ($diagnosticPath in $diagnosticPaths) {
+                    ('Файл: {0} | существует: {1}' -f $diagnosticPath, (Test-Path -LiteralPath $diagnosticPath -PathType Leaf))
+                }
+            ) | Out-File -LiteralPath $script:logPath -Encoding utf8 -Append
+        }
         if ($queueResult.ReusedRecoveryQueue) {
             Write-Host 'В предыдущей очереди не осталось треков для повторного восстановления.' -ForegroundColor Green
         } elseif ([string]$script:resumeSettings.Url -match '/track/\d+') {
@@ -1846,31 +1907,68 @@ function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
     }
 }
 
+function Repair-LegacyConsoleEncoding([string]$Text) {
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
+    # Upstream CLI output can be UTF-8 bytes interpreted as CP866 by the
+    # PowerShell capture path. Repair only when the reverse conversion restores
+    # recognizable Russian unavailable-track wording; otherwise preserve input.
+    if ($Text -notmatch '[╨╤╞╟╠╡╢╣╦╧╨╩╪╫╬]') { return $Text }
+    try {
+        $cp866 = [System.Text.Encoding]::GetEncoding(866)
+        $utf8 = [System.Text.Encoding]::UTF8
+        $repaired = $utf8.GetString($cp866.GetBytes($Text))
+        if ($repaired -match '(?i)(не\s+доступен|недоступен|недоступна|недоступно)\s+для\s+скачивания') {
+            return $repaired
+        }
+    } catch { }
+    return $Text
+}
+
 function Get-UnavailableTrackEntries([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
 
-    $entries = New-Object 'System.Collections.Generic.List[object]'
-    $currentPass = ''
-    # Known output observed in live runs:
-    # [1866/6737] Трек Didier Marouani, Space - Just Blue не доступен для скачивания
-    $pattern = '(?i)^\s*\[(?<Index>\d+)\s*/\s*(?<Total>\d+)\]\s*(?:Трек\s+)?(?<Track>.+?)\s+(?<Message>не\s+доступен\s+для\s+скачивания|недоступен\s+для\s+скачивания|недоступна\s+для\s+скачивания|недоступно\s+для\s+скачивания|not\s+available\s+for\s+download|unavailable\s+for\s+download)\s*$'
-
-    foreach ($line in [regex]::Split($Text, '\r?\n')) {
-        if ($line -match '^\s*=+\s*(?<Pass>.+?)\s*=+\s*$') {
-            $currentPass = $Matches['Pass'].Trim()
-            continue
+    # Logs from older CLI/PowerShell combinations can contain UTF-8 text that
+    # was decoded as CP866 and then saved as UTF-8. Try untouched and repaired
+    # text independently so a failed encoding repair cannot hide the entries.
+    $candidateTexts = New-Object 'System.Collections.Generic.List[string]'
+    [void]$candidateTexts.Add($Text)
+    $repaired = Repair-LegacyConsoleEncoding -Text $Text
+    if (-not [string]::IsNullOrWhiteSpace($repaired) -and $repaired -ne $Text) {
+        [void]$candidateTexts.Add($repaired)
+    }
+    try {
+        $cp866 = [System.Text.Encoding]::GetEncoding(866)
+        $utf8 = [System.Text.Encoding]::UTF8
+        $alternateRepair = $utf8.GetString($cp866.GetBytes($Text))
+        if (-not [string]::IsNullOrWhiteSpace($alternateRepair) -and
+            -not ($candidateTexts -contains $alternateRepair)) {
+            [void]$candidateTexts.Add($alternateRepair)
         }
-        if ($line -match $pattern) {
-            [void]$entries.Add([pscustomobject]@{
-                TrackIndex    = [int]$Matches['Index']
-                PlaylistTotal = [int]$Matches['Total']
-                Track         = $Matches['Track'].Trim()
-                Message       = $line.Trim()
-                Pass          = $currentPass
-            })
+    } catch { }
+
+    $pattern = '(?i)^\s*\[(?<Index>\d+)\s*/\s*(?<Total>\d+)\]\s*(?:Трек\s+)?(?<Track>.+?)\s+(?<Message>не\s+доступен\s+для\s+скачивания|недоступен\s+для\s+скачивания|недоступна\s+для\s+скачивания|недоступно\s+для\s+скачивания|not\s+available\s+for\s+download|unavailable\s+for\s+download)\s*$'
+    $entriesByKey = @{}
+    foreach ($candidateText in $candidateTexts) {
+        $currentPass = ''
+        foreach ($line in [regex]::Split($candidateText, '\r?\n')) {
+            if ($line -match '^\s*=+\s*(?<Pass>.+?)\s*=+\s*$') {
+                $currentPass = $Matches['Pass'].Trim()
+                continue
+            }
+            if ($line -match $pattern) {
+                $entry = [pscustomobject]@{
+                    TrackIndex    = [int]$Matches['Index']
+                    PlaylistTotal = [int]$Matches['Total']
+                    Track         = $Matches['Track'].Trim()
+                    Message       = $line.Trim()
+                    Pass          = $currentPass
+                }
+                $entryKey = '{0}/{1}|{2}' -f $entry.TrackIndex, $entry.PlaylistTotal, $entry.Track
+                if (-not $entriesByKey.ContainsKey($entryKey)) { $entriesByKey[$entryKey] = $entry }
+            }
         }
     }
-    return @($entries.ToArray())
+    return @($entriesByKey.Values | Sort-Object TrackIndex)
 }
 
 function Get-ErrorLines([string]$Text) {

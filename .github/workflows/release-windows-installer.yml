@@ -5,6 +5,7 @@ on:
     branches:
       - release/windows-installer-preview
       - feature/backend-failover-and-library-export
+      - feature/installer-in-place-upgrade
       - feature/native-desktop-app
       - main
   pull_request:

@@ -124,6 +124,13 @@ $iscc = $isccCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Lea
 if (-not $iscc) { throw 'ISCC.exe Inno Setup 7 не найден после установки.' }
 
 $installerScript = Join-Path $PSScriptRoot 'YandexMusicDownloaderPlus.iss'
+$installerCode = Get-Content -LiteralPath $installerScript -Raw
+foreach ($requiredUpgradeFeature in @('function DetectExistingInstall()', 'function InitializeSetup()', 'WizardForm.DirEdit.Text := DetectedInstallDir', 'Обнаружена установленная версия Downloader Plus')) {
+    if ($installerCode -notmatch [regex]::Escape($requiredUpgradeFeature)) {
+        throw "В сценарии установщика отсутствует проверка обнаружения/обновления существующей версии: $requiredUpgradeFeature"
+    }
+}
+Write-Host 'Installer upgrade-detection source check: OK'
 & $iscc "/DPayloadDir=$payload" "/DOutputDir=$OutputDirectory" $installerScript
 if ($LASTEXITCODE -ne 0) { throw "Компиляция установщика завершилась с кодом $LASTEXITCODE." }
 
@@ -159,6 +166,44 @@ $guiSmoke = Start-Process -FilePath $installedGui -ArgumentList @('--self-test')
 if ($guiSmoke.ExitCode -ne 0) { throw "Графическое приложение не прошло самопроверку после установки (код $($guiSmoke.ExitCode))." }
 Write-Host 'WPF GUI self-test: OK'
 
+# Verify the installer exposes a usable uninstaller in the install folder and
+# Start Menu, then install over the same directory to exercise upgrade mode.
+$uninstaller = Join-Path $smokeDir 'unins000.exe'
+$appUninstallShortcut = Join-Path $smokeDir 'Uninstall Downloader Plus.lnk'
+$startMenuUninstallShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Yandex Music Downloader Plus\Удалить Downloader Plus.lnk'
+if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
+    throw 'В каталоге установки не найден штатный unins000.exe.'
+}
+if (-not (Test-Path -LiteralPath $appUninstallShortcut -PathType Leaf)) {
+    throw 'В каталоге установки не создан ярлык Uninstall Downloader Plus.'
+}
+if (-not (Test-Path -LiteralPath $startMenuUninstallShortcut -PathType Leaf)) {
+    throw 'В меню Пуск не создан ярлык удаления Downloader Plus.'
+}
+
+$settingsFile = Join-Path (Join-Path $env:APPDATA 'YandexMusicDownloaderPlus') 'music-path.txt'
+if (-not (Test-Path -LiteralPath $settingsFile -PathType Leaf)) {
+    throw 'Первая тестовая установка не сохранила путь к музыкальной папке в AppData.'
+}
+$firstMusicPath = (Get-Content -LiteralPath $settingsFile -Raw).Trim()
+if ([string]::IsNullOrWhiteSpace($firstMusicPath)) {
+    throw 'Первая тестовая установка сохранила пустой путь к музыкальной папке.'
+}
+$upgradeInstall = Start-Process -FilePath $setupExe -ArgumentList $smokeArgs -Wait -PassThru
+if ($upgradeInstall.ExitCode -ne 0) {
+    throw "Установка поверх существующей версии завершилась с кодом $($upgradeInstall.ExitCode)."
+}
+foreach ($upgradeFile in @($installedGui,$installedLauncher,$installedPython,$uninstaller,$appUninstallShortcut)) {
+    if (-not (Test-Path -LiteralPath $upgradeFile -PathType Leaf)) {
+        throw "После обновления отсутствует файл: $upgradeFile"
+    }
+}
+$secondMusicPath = (Get-Content -LiteralPath $settingsFile -Raw).Trim()
+if ($secondMusicPath -ne $firstMusicPath) {
+    throw "Обновление изменило музыкальную папку пользователя: '$firstMusicPath' -> '$secondMusicPath'."
+}
+Write-Host 'Smoke test: повторная установка поверх существующей и сохранение настроек — OK.' -ForegroundColor Green
+
 $cliHelp = (& $installedLauncher --help 2>&1 | Out-String)
 $launcherExit = $LASTEXITCODE
 if ($launcherExit -ne 0 -or $cliHelp -notmatch '--token' -or $cliHelp -notmatch '--url') {
@@ -180,10 +225,6 @@ if ($optionalExit -ne 0 -or $optionalHelp -notmatch 'Optional Yandex Music backe
     throw "Дополнительный backend не установлен или не импортируется (код $optionalExit).`n$optionalHelp"
 }
 
-$settingsFile = Join-Path (Join-Path $env:APPDATA 'YandexMusicDownloaderPlus') 'music-path.txt'
-if (-not (Test-Path -LiteralPath $settingsFile -PathType Leaf)) {
-    throw 'Тестовая установка не сохранила выбранную музыкальную папку в AppData.'
-}
 $musicPath = (Get-Content -LiteralPath $settingsFile -Raw).Trim()
 if (-not (Test-Path -LiteralPath $musicPath -PathType Container)) {
     throw "Установщик не создал отмеченную по умолчанию папку музыки: $musicPath"

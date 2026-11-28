@@ -2,10 +2,10 @@
 #define AppVersion "0.3.0"
 #define AppPublisher "Andreyfdfd"
 #ifndef PayloadDir
-  #define PayloadDir "..\artifacts\payload"
+  #define PayloadDir "..\\artifacts\\payload"
 #endif
 #ifndef OutputDir
-  #define OutputDir "..\artifacts\output"
+  #define OutputDir "..\\artifacts\\output"
 #endif
 
 [Setup]
@@ -14,7 +14,8 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL=https://github.com/Andreyfdfd/YandexMusicDownloaderPlus
-DefaultDirName={localappdata}\Programs\YandexMusicDownloaderPlus
+DefaultDirName={localappdata}\\Programs\\YandexMusicDownloaderPlus
+UsePreviousAppDir=yes
 DefaultGroupName=Yandex Music Downloader Plus
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -28,8 +29,9 @@ SolidCompression=yes
 WizardStyle=modern
 SetupLogging=yes
 UninstallDisplayName=Yandex Music Downloader Plus
-UninstallDisplayIcon={app}\app\DownloaderPlus.exe
-CloseApplications=no
+UninstallDisplayIcon={app}\\app\\DownloaderPlus.exe
+CloseApplications=yes
+CloseApplicationsFilter=*DownloaderPlus.exe
 
 [Types]
 Name: "full"; Description: "Полная установка"
@@ -46,30 +48,95 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 Name: "createmusicfolder"; Description: "Создать выбранную папку для музыки сразу после установки"; GroupDescription: "Музыкальная библиотека:"
 
 [Dirs]
-Name: "{app}\logs"
+Name: "{app}\\logs"
 
 [Files]
-Source: "{#PayloadDir}\app\*"; DestDir: "{app}\app"; Components: core; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#PayloadDir}\YandexMusicDownloader.ps1"; DestDir: "{app}"; Components: core; Flags: ignoreversion
-Source: "{#PayloadDir}\Запустить_загрузку.bat"; DestDir: "{app}"; Components: core; Flags: ignoreversion
-Source: "{#PayloadDir}\tools\source_inventory.py"; DestDir: "{app}\tools"; Components: core; Flags: ignoreversion
-Source: "{#PayloadDir}\tools\backends\*"; DestDir: "{app}\tools\backends"; Components: core; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#PayloadDir}\runtime\*"; DestDir: "{app}\runtime"; Components: core; Excludes: "Optional\Lib\site-packages\*"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#PayloadDir}\runtime\Optional\Lib\site-packages\*"; DestDir: "{app}\runtime\Optional\Lib\site-packages"; Components: fallback; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#PayloadDir}\README.md"; DestDir: "{app}\docs"; Components: docs; Flags: ignoreversion
-Source: "{#PayloadDir}\ПРОЧТИ_МЕНЯ.txt"; DestDir: "{app}\docs"; Components: docs; Flags: ignoreversion
+Source: "{#PayloadDir}\\app\\*"; DestDir: "{app}\\app"; Components: core; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PayloadDir}\\YandexMusicDownloader.ps1"; DestDir: "{app}"; Components: core; Flags: ignoreversion
+Source: "{#PayloadDir}\\Запустить_загрузку.bat"; DestDir: "{app}"; Components: core; Flags: ignoreversion
+Source: "{#PayloadDir}\\tools\\source_inventory.py"; DestDir: "{app}\\tools"; Components: core; Flags: ignoreversion
+Source: "{#PayloadDir}\\tools\\backends\\*"; DestDir: "{app}\\tools\\backends"; Components: core; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PayloadDir}\\runtime\\*"; DestDir: "{app}\\runtime"; Components: core; Excludes: "Optional\\Lib\\site-packages\\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PayloadDir}\\runtime\\Optional\\Lib\\site-packages\\*"; DestDir: "{app}\\runtime\\Optional\\Lib\\site-packages"; Components: fallback; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PayloadDir}\\README.md"; DestDir: "{app}\\docs"; Components: docs; Flags: ignoreversion
+Source: "{#PayloadDir}\\ПРОЧТИ_МЕНЯ.txt"; DestDir: "{app}\\docs"; Components: docs; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Yandex Music Downloader Plus\Downloader Plus"; Filename: "{app}\app\DownloaderPlus.exe"; Components: core
-Name: "{autoprograms}\Yandex Music Downloader Plus\Консольная версия"; Filename: "{app}\Запустить_загрузку.bat"; Components: core
-Name: "{autodesktop}\Downloader Plus"; Filename: "{app}\app\DownloaderPlus.exe"; Components: core; Tasks: desktopicon
+Name: "{autoprograms}\\Yandex Music Downloader Plus\\Downloader Plus"; Filename: "{app}\\app\\DownloaderPlus.exe"; Components: core
+Name: "{autoprograms}\\Yandex Music Downloader Plus\\Консольная версия"; Filename: "{app}\\Запустить_загрузку.bat"; Components: core
+Name: "{autoprograms}\\Yandex Music Downloader Plus\\Удалить Downloader Plus"; Filename: "{uninstallexe}"
+Name: "{app}\\Uninstall Downloader Plus"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\\Downloader Plus"; Filename: "{app}\\app\\DownloaderPlus.exe"; Components: core; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\app\DownloaderPlus.exe"; Description: "Запустить Yandex Music Downloader Plus"; Flags: postinstall nowait skipifsilent unchecked; Components: core
+Filename: "{app}\\app\\DownloaderPlus.exe"; Description: "Запустить Yandex Music Downloader Plus"; Flags: postinstall nowait skipifsilent unchecked; Components: core
 
 [Code]
 var
   MusicFolderPage: TInputDirWizardPage;
+  DetectedInstallDir: String;
+  DetectedInstallKey: String;
+
+function FindExistingInstallInRoot(RootKey: Integer; SubKeyRoot: String): Boolean;
+var
+  SubKeys: TArrayOfString;
+  i: Integer;
+  DisplayName: String;
+  InstallLocation: String;
+begin
+  Result := False;
+  if not RegGetSubkeyNames(RootKey, SubKeyRoot, SubKeys) then
+    Exit;
+
+  for i := 0 to GetArrayLength(SubKeys) - 1 do
+  begin
+    DisplayName := '';
+    InstallLocation := '';
+    if RegQueryStringValue(RootKey, SubKeyRoot + '\\' + SubKeys[i], 'DisplayName', DisplayName) and
+      (CompareText(DisplayName, 'Yandex Music Downloader Plus') = 0) then
+    begin
+      RegQueryStringValue(RootKey, SubKeyRoot + '\\' + SubKeys[i], 'InstallLocation', InstallLocation);
+      if InstallLocation = '' then
+        RegQueryStringValue(RootKey, SubKeyRoot + '\\' + SubKeys[i], 'Inno Setup: App Path', InstallLocation);
+      if InstallLocation <> '' then
+      begin
+        DetectedInstallDir := InstallLocation;
+        DetectedInstallKey := SubKeyRoot + '\\' + SubKeys[i];
+        Result := True;
+        Exit;
+      end;
+    end;
+  end;
+end;
+
+function DetectExistingInstall(): Boolean;
+begin
+  Result := FindExistingInstallInRoot(HKCU, 'Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall');
+  if not Result then
+    Result := FindExistingInstallInRoot(HKLM32, 'Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall');
+  if not Result then
+    Result := FindExistingInstallInRoot(HKLM64, 'Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall');
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  Result := True;
+  DetectedInstallDir := '';
+  DetectedInstallKey := '';
+
+  if DetectExistingInstall() then
+  begin
+    if not WizardSilent then
+    begin
+      if MsgBox('Обнаружена установленная версия Downloader Plus.' + #13#10#13#10 +
+        'Папка: ' + DetectedInstallDir + #13#10#13#10 +
+        'Установить обновление поверх неё, сохранив пользовательские настройки?' + #13#10 +
+        'Личные данные и токен не будут удалены.',
+        mbConfirmation, MB_YESNO) <> IDYES then
+        Result := False;
+    end;
+  end;
+end;
 
 function GetDefaultMusicPath(): String;
 var
@@ -83,6 +150,9 @@ end;
 
 procedure InitializeWizard();
 begin
+  if DetectedInstallDir <> '' then
+    WizardForm.DirEdit.Text := DetectedInstallDir;
+
   MusicFolderPage := CreateInputDirPage(
     wpSelectTasks,
     'Папка для музыки',
@@ -114,10 +184,11 @@ begin
           mbError, MB_OK);
     end;
 
-    SettingsDir := ExpandConstant('{userappdata}\YandexMusicDownloaderPlus');
+    SettingsDir := ExpandConstant('{userappdata}\\YandexMusicDownloaderPlus');
     if ForceDirectories(SettingsDir) then
     begin
-      if not SaveStringToFile(AddBackslash(SettingsDir) + 'music-path.txt', MusicPath + #13#10, False) then
+      if not FileExists(AddBackslash(SettingsDir) + 'music-path.txt') and
+        not SaveStringToFile(AddBackslash(SettingsDir) + 'music-path.txt', MusicPath + #13#10, False) then
         MsgBox('Не удалось сохранить выбранную папку музыки. При первом запуске её можно будет указать вручную.',
           mbInformation, MB_OK);
     end
