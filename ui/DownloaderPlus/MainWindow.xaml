@@ -4,6 +4,7 @@
         Title="Yandex Music Downloader Plus"
         Width="1280" Height="850" MinWidth="1040" MinHeight="720"
         WindowStartupLocation="CenterScreen"
+        SizeChanged="Window_SizeChanged"
         Background="{StaticResource WindowBrush}"
         Foreground="{StaticResource TextBrush}">
     <Grid>
@@ -210,11 +211,14 @@
                                     </Grid>
                                     <ProgressBar x:Name="DownloadProgress" Value="0" Maximum="100" Margin="0,18,0,8"/>
                                     <TextBlock x:Name="ProgressCaption" Text="Ожидание" Foreground="{StaticResource MutedBrush}" FontSize="11"/>
-                                    <TextBox x:Name="LiveOutputBox" Height="165" Margin="0,13,0,0"
-                                             IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
-                                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                                             FontFamily="Consolas" FontSize="11" Background="#0B1220"
-                                             BorderBrush="#111827"/>
+                                    <TextBlock x:Name="CurrentTrackText" Text="Ожидание текущей композиции…"
+                                               FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap"
+                                               Foreground="{StaticResource TextBrush}" Margin="0,14,0,4"/>
+                                    <TextBox x:Name="LiveOutputBox" MinHeight="230" Height="300" Margin="0,8,0,0"
+                                             IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+                                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                             FontFamily="Consolas" FontSize="14" Background="#0B1220"
+                                             BorderBrush="#111827" Padding="10"/>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
