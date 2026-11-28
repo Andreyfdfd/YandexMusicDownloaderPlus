@@ -1235,11 +1235,29 @@ function Invoke-RetryFailedTracks([string]$PreviousLogPath, [string]$PythonExe, 
     }
 
     if ($queue.Count -eq 0) {
-        # Record why recovery produced no queue, including the presence of the metadata
-        # reports needed for exact track matching. This is especially important in GUI
-        # mode, where an empty queue otherwise looks like a silent/no-op retry.
+        # Diagnostic information is written to the current run log, even when
+        # retry cannot construct candidates from the selected historical log.
         if (-not [string]::IsNullOrWhiteSpace($script:logPath)) {
-            $oldStamp = [regex]::Match([System.IO.Path]::GetFileName($PreviousLogPath), '^download-(?<Stamp>\\d{8}-\\d{6})\\.log
+            $stampMatch = [regex]::Match([System.IO.Path]::GetFileName($PreviousLogPath), '^download-(?<Stamp>\d{8}-\d{6})\.log$')
+            $oldStamp = $stampMatch.Groups['Stamp'].Value
+            $diagnosticPaths = @(
+                (Join-Path $LogsDir "source-inventory-$oldStamp.csv"),
+                (Join-Path $LogsDir "library-status-$oldStamp.csv"),
+                (Join-Path $LogsDir "retry-queue-$oldStamp.csv"),
+                (Join-Path $LogsDir "recovery-results-$oldStamp.csv")
+            )
+            @(
+                ''
+                'Диагностика пустой очереди восстановления:'
+                ('Источник лога: {0}' -f $PreviousLogPath)
+                ('Ошибка очереди: {0}' -f [string]$queueResult.Error)
+                ('Снимок источника в памяти: {0} записей' -f $sourceInventoryCount)
+                foreach ($diagnosticPath in $diagnosticPaths) {
+                    ('Файл: {0} | существует: {1}' -f $diagnosticPath, (Test-Path -LiteralPath $diagnosticPath -PathType Leaf))
+                }
+            ) | Out-File -LiteralPath $script:logPath -Encoding utf8 -Append
+        }
+        if ($queueResult.ReusedRecoveryQueue) {
             Write-Host 'В предыдущей очереди не осталось треков для повторного восстановления.' -ForegroundColor Green
         } elseif ([string]$script:resumeSettings.Url -match '/track/\d+') {
             Write-Host 'Выбран лог одиночного трека, который в этом запуске скачался успешно. В нём нет списка неудачных композиций, поэтому очередь пуста.' -ForegroundColor Yellow
