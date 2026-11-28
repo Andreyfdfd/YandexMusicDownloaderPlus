@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 otherwise uses the active OEM code page for native/console output,
 # which corrupts Cyrillic text before the GUI's UTF-8 decoder receives it.
 try {
-    $script:utf8ConsoleEncoding = New-Object System.Text.UTF8Encoding($false)
+    $script:utf8ConsoleEncoding = [System.Text.UTF8Encoding]::new($false)
     [Console]::OutputEncoding = $script:utf8ConsoleEncoding
     [Console]::InputEncoding = $script:utf8ConsoleEncoding
     $OutputEncoding = $script:utf8ConsoleEncoding
