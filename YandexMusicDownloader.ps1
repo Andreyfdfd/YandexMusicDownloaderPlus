@@ -906,6 +906,27 @@ function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [st
         else { Write-Host "Не удалось получить состав источника: $($snapshot.Error)" -ForegroundColor Yellow }
     }
 
+    # Build lookup indexes once. The previous nested Where-Object lookups scanned
+    # the full 6k+ inventory for every failed track and could make Retry appear stalled.
+    $inventoryByIndex = @{}
+    $inventoryByLabel = @{}
+    $inventoryByPath = @{}
+    foreach ($inventoryItem in $inventory) {
+        $indexKey = [string]$inventoryItem.SourceIndex
+        if (-not [string]::IsNullOrWhiteSpace($indexKey) -and -not $inventoryByIndex.ContainsKey($indexKey)) {
+            $inventoryByIndex[$indexKey] = $inventoryItem
+        }
+        $labelKey = ([string]$inventoryItem.TrackLabel).Trim().ToLowerInvariant()
+        if (-not [string]::IsNullOrWhiteSpace($labelKey) -and -not $inventoryByLabel.ContainsKey($labelKey)) {
+            $inventoryByLabel[$labelKey] = $inventoryItem
+        }
+        $expectedBase = Join-Path $OutputDir ([string]$inventoryItem.RelativeBasePath -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+        $normalizedPath = Get-NormalizedAudioBasePath -Path $expectedBase
+        if (-not [string]::IsNullOrWhiteSpace($normalizedPath) -and -not $inventoryByPath.ContainsKey($normalizedPath)) {
+            $inventoryByPath[$normalizedPath] = $inventoryItem
+        }
+    }
+
     if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
         foreach ($row in @(Import-Csv -LiteralPath $reportPath | Where-Object { $_.Category -eq 'Не удалось скачать' })) {
             if (-not [string]::IsNullOrWhiteSpace([string]$row.TrackUrl)) {
@@ -918,10 +939,12 @@ function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [st
     foreach ($entry in @(Get-UnavailableTrackEntries -Text $oldLogText)) {
         $track = $null
         if ($hasOriginalInventory -and $inventory.Count -eq [int]$entry.PlaylistTotal) {
-            $track = @($inventory | Where-Object { [int]$_.SourceIndex -eq [int]$entry.TrackIndex } | Select-Object -First 1)[0]
+            $indexKey = [string]$entry.TrackIndex
+            if ($inventoryByIndex.ContainsKey($indexKey)) { $track = $inventoryByIndex[$indexKey] }
         }
         if ($null -eq $track) {
-            $track = @($inventory | Where-Object { $_.TrackLabel -and $_.TrackLabel.Trim() -ieq $entry.Track.Trim() } | Select-Object -First 1)[0]
+            $labelKey = ([string]$entry.Track).Trim().ToLowerInvariant()
+            if ($inventoryByLabel.ContainsKey($labelKey)) { $track = $inventoryByLabel[$labelKey] }
         }
         Add-RetryCandidate -Queue $queue -Seen $seen -TrackRecord $track -Details ([string]$entry.Message) -FallbackLabel ([string]$entry.Track)
     }
@@ -931,10 +954,7 @@ function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [st
             if ($outcome.Status -notin @('Не найден после прохода','Нулевой размер','Изменение не обнаружено')) { continue }
             $pathKey = Get-NormalizedAudioBasePath -Path ([string]$outcome.Path)
             $track = $null
-            foreach ($item in $inventory) {
-                $expectedBase = Join-Path $OutputDir ([string]$item.RelativeBasePath -replace '/', [System.IO.Path]::DirectorySeparatorChar)
-                if ((Get-NormalizedAudioBasePath -Path $expectedBase) -eq $pathKey) { $track = $item; break }
-            }
+            if ($inventoryByPath.ContainsKey($pathKey)) { $track = $inventoryByPath[$pathKey] }
             Add-RetryCandidate -Queue $queue -Seen $seen -TrackRecord $track -Details ("$($outcome.Status): $($outcome.Path)") -FallbackLabel ([System.IO.Path]::GetFileNameWithoutExtension([string]$outcome.Path))
         }
     }
