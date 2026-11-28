@@ -750,6 +750,12 @@ namespace DownloaderPlus
             }
         }
 
+        private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            if (LiveOutputBox == null) return;
+            LiveOutputBox.Height = Math.Max(230.0, Math.Min(460.0, ActualHeight * 0.38));
+        }
+
         private void AppendOutput(string line)
         {
             if (closing) return;
@@ -758,6 +764,10 @@ namespace DownloaderPlus
                 if (closing) return;
                 LiveOutputBox.AppendText(line + Environment.NewLine);
                 LiveOutputBox.ScrollToEnd();
+
+                Match trackMatch = Regex.Match(line ?? "", @"^\s*\[(?<current>\d+)\s*/\s*(?<total>\d+)\]\s*(?:Трек\s+)?(?<track>.+)$");
+                if (trackMatch.Success && CurrentTrackText != null)
+                    CurrentTrackText.Text = "Сейчас: " + trackMatch.Groups["current"].Value + "/" + trackMatch.Groups["total"].Value + " — " + trackMatch.Groups["track"].Value;
 
                 Match match = Regex.Match(line ?? "", @"\[(\d+)\s*/\s*(\d+)\]");
                 if (match.Success)
