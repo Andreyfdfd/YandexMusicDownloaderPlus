@@ -174,7 +174,14 @@ if (-not (Test-Path -LiteralPath $startMenuUninstallShortcut -PathType Leaf)) {
     throw 'В меню Пуск не создан ярлык удаления Downloader Plus.'
 }
 
+$settingsFile = Join-Path (Join-Path $env:APPDATA 'YandexMusicDownloaderPlus') 'music-path.txt'
+if (-not (Test-Path -LiteralPath $settingsFile -PathType Leaf)) {
+    throw 'Первая тестовая установка не сохранила путь к музыкальной папке в AppData.'
+}
 $firstMusicPath = (Get-Content -LiteralPath $settingsFile -Raw).Trim()
+if ([string]::IsNullOrWhiteSpace($firstMusicPath)) {
+    throw 'Первая тестовая установка сохранила пустой путь к музыкальной папке.'
+}
 $upgradeInstall = Start-Process -FilePath $setupExe -ArgumentList $smokeArgs -Wait -PassThru
 if ($upgradeInstall.ExitCode -ne 0) {
     throw "Установка поверх существующей версии завершилась с кодом $($upgradeInstall.ExitCode)."
@@ -211,10 +218,6 @@ if ($optionalExit -ne 0 -or $optionalHelp -notmatch 'Optional Yandex Music backe
     throw "Дополнительный backend не установлен или не импортируется (код $optionalExit).`n$optionalHelp"
 }
 
-$settingsFile = Join-Path (Join-Path $env:APPDATA 'YandexMusicDownloaderPlus') 'music-path.txt'
-if (-not (Test-Path -LiteralPath $settingsFile -PathType Leaf)) {
-    throw 'Тестовая установка не сохранила выбранную музыкальную папку в AppData.'
-}
 $musicPath = (Get-Content -LiteralPath $settingsFile -Raw).Trim()
 if (-not (Test-Path -LiteralPath $musicPath -PathType Container)) {
     throw "Установщик не создал отмеченную по умолчанию папку музыки: $musicPath"
