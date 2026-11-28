@@ -326,6 +326,32 @@ namespace DownloaderPlus
             bool selected = FailedTracksList.SelectedItem is FailedTrack;
             RetryFailedSelectedButton.IsEnabled = selected;
             SearchFailedSelectedButton.IsEnabled = selected;
+            SearchFailedAllButton.IsEnabled = FailedTracksList.Items.Count > 0;
+        }
+
+        private void SearchFailedAll_Click(object sender, RoutedEventArgs e)
+        {
+            var tracks = FailedTracksList.Items.Cast<FailedTrack>().ToList();
+            if (tracks.Count == 0) return;
+            int openCount = Math.Min(10, tracks.Count);
+            string prompt = "Открыть веб-поиск по " + openCount + " композициям в отдельных вкладках браузера?";
+            if (tracks.Count > openCount) prompt += Environment.NewLine + "В списке " + tracks.Count + " треков; откроются первые 10. Остальные можно открыть следующей порцией, изменив порядок/выбор запуска.";
+            if (MessageBox.Show(this, prompt, "Массовый поиск", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            try
+            {
+                for (int i = 0; i < openCount; i++)
+                {
+                    var track = tracks[i];
+                    string query = ((track.Artists ?? "") + " " + (track.TrackTitle ?? "") + " official audio").Trim();
+                    string url = "https://www.google.com/search?q=" + Uri.EscapeDataString(query);
+                    Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+                    if (i + 1 < openCount) System.Threading.Thread.Sleep(150);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Не удалось открыть пакет поисковых запросов: " + ex.Message, "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
 
         private void RetryFailedSelected_Click(object sender, RoutedEventArgs e)
