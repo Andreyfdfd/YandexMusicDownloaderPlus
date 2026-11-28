@@ -235,7 +235,7 @@ namespace DownloaderPlus
         {
             var result = new List<ParsedUnavailable>();
             if (string.IsNullOrWhiteSpace(text)) return result;
-            var pattern = new Regex(@"^\\s*\\[(?<index>\\d+)\\s*/\\s*\\d+\\]\\s*(?:Трек\\s+)?(?<track>.+?)\\s+(?:не\\s+доступен|недоступен|недоступна|недоступно)\\s+для\\s+скачивания\\s*$",
+            var pattern = new Regex(@"^\s*\[(?<index>\d+)\s*/\s*\d+\]\s*(?:Трек\s+)?(?<track>.+?)\s+(?:не\s+доступен|недоступен|недоступна|недоступно)\s+для\s+скачивания\s*$",
                 RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.CultureInvariant);
             foreach (Match match in pattern.Matches(text))
             {
