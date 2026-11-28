@@ -758,6 +758,7 @@ namespace DownloaderPlus
 
         private void AppendOutput(string line)
         {
+            line = NormalizeLegacyConsoleMojibake(line ?? "");
             if (closing) return;
             Dispatcher.BeginInvoke(new Action(() =>
             {
