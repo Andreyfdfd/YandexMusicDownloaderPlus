@@ -904,7 +904,7 @@ function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [st
         # The source URL must come from the selected historical log, not current settings.
         # This prevents rebuilding inventory for an unrelated playlist/album.
         $oldLogTextForSource = Get-Content -LiteralPath $PreviousLogPath -Raw -ErrorAction SilentlyContinue
-        $sourceUrlMatch = [regex]::Match([string]$oldLogTextForSource, '(?im)^\\s*(?:Ссылка|URL)\\s*:\\s*(?<Url>https?://\\S+)')
+        $sourceUrlMatch = [regex]::Match([string]$oldLogTextForSource, '(?im)^\s*(?:Ссылка|URL)\s*:\s*(?<Url>https?://\S+)')
         $historicalSourceUrl = if ($sourceUrlMatch.Success) { $sourceUrlMatch.Groups['Url'].Value.Trim() } else { [string]$script:resumeSettings.Url }
         if ([string]::IsNullOrWhiteSpace($historicalSourceUrl)) {
             Write-Host 'В выбранном журнале нет ссылки на исходный плейлист/альбом, а в текущих настройках ссылка пустая. Снимок не запрашивался.' -ForegroundColor Yellow
