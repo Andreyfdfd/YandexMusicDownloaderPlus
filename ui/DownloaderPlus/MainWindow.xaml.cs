@@ -289,9 +289,9 @@ namespace DownloaderPlus
                 if (!string.Equals(CsvValue(row, "Category"), "Не удалось скачать", StringComparison.OrdinalIgnoreCase)) continue;
                 string url = CsvValue(row, "TrackUrl");
                 string title = CsvValue(row, "TrackTitle");
-                if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(title)) continue;
+                if (string.IsNullOrWhiteSpace(title)) continue;
                 var item = new FailedTrack { TrackTitle = title, Artists = CsvValue(row, "Artists"), AlbumTitle = CsvValue(row, "AlbumTitle"), TrackUrl = url, RelativeBasePath = CsvValue(row, "RelativeBasePath"), Details = CsvValue(row, "Details"), TrackKey = CsvValue(row, "TrackKey") };
-                string key = string.IsNullOrWhiteSpace(item.TrackKey) ? url : item.TrackKey;
+                string key = !string.IsNullOrWhiteSpace(item.TrackKey) ? item.TrackKey : (!string.IsNullOrWhiteSpace(url) ? url : title + "|" + item.Artists);
                 if (!failures.ContainsKey(key)) failures[key] = item;
             }
 
@@ -326,8 +326,9 @@ namespace DownloaderPlus
 
         private void FailedTracksList_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            bool selected = FailedTracksList.SelectedItem is FailedTrack;
-            RetryFailedSelectedButton.IsEnabled = selected;
+            var selectedTrack = FailedTracksList.SelectedItem as FailedTrack;
+            bool selected = selectedTrack != null;
+            RetryFailedSelectedButton.IsEnabled = selected && !string.IsNullOrWhiteSpace(selectedTrack.TrackUrl);
             SearchFailedSelectedButton.IsEnabled = selected;
             SearchFailedAllButton.IsEnabled = FailedTracksList.Items.Count > 0;
         }
@@ -365,6 +366,7 @@ namespace DownloaderPlus
         {
             var track = FailedTracksList.SelectedItem as FailedTrack;
             if (track == null) return;
+            if (string.IsNullOrWhiteSpace(track.TrackUrl)) { MessageBox.Show(this, "Для этой позиции не удалось определить ссылку трека. Можно использовать веб-поиск или восстановление всего запуска.", "Ссылка отсутствует", MessageBoxButton.OK, MessageBoxImage.Information); return; }
             if (runner.IsRunning) { MessageBox.Show(this, "Сначала дождись завершения текущей операции.", "Backend занят", MessageBoxButton.OK, MessageBoxImage.Information); return; }
             if (!EnsureToken()) return;
             CaptureSettings();
