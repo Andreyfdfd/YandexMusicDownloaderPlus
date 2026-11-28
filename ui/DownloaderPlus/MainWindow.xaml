@@ -318,7 +318,7 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
-                        </Grid.Row-definitions>
+                        </Grid.RowDefinitions>
                         <Border Background="{StaticResource PanelBrush}" CornerRadius="18" Padding="24" Margin="0,0,0,15">
                             <StackPanel>
                                 <TextBlock Text="Журналы и отчёты" FontSize="19" FontWeight="SemiBold"/>
