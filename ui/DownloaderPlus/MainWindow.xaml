@@ -302,7 +302,7 @@
                                     <Button x:Name="RetryFailedSelectedButton" Content="↻ Повторить выбранный" Click="RetryFailedSelected_Click" Margin="0,0,8,8" IsEnabled="False"/>
                                     <Button x:Name="RetryFailedAllButton" Content="↻ Повторить все" Style="{StaticResource AccentButton}" Click="RetryFailedAll_Click" Margin="0,0,8,8" IsEnabled="False"/>
                                     <Button x:Name="SearchFailedSelectedButton" Content="Поиск выбранного" Click="SearchFailedSelected_Click" Margin="0,0,8,8" IsEnabled="False"/>
-                                    <Button x:Name="SearchFailedAllButton" Content="Поиск всех (до 10)" Click="SearchFailedAll_Click" Margin="0,0,8,8" IsEnabled="False"/>
+                                    <Button x:Name="SearchFailedAllButton" Content="Поиск следующей группы (до 10)" Click="SearchFailedAll_Click" Margin="0,0,8,8" IsEnabled="False"/>
                                 </WrapPanel>
                                 <TextBlock x:Name="FailedTracksSummary" Text="Выбери журнал загрузки." Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0"/>
                             </StackPanel>
