@@ -42,6 +42,7 @@ namespace DownloaderPlus
 
             SourceUrlBox.Text = settings.SourceUrl ?? "";
             ExportSourceBox.Text = settings.SourceUrl ?? "";
+            SourceUrlBox.TextChanged += SourceUrlBox_TextChanged;
             MusicFolderBox.Text = settings.MusicPath ?? "";
             SettingsMusicFolderBox.Text = settings.MusicPath ?? "";
             ExportFolderBox.Text = settings.ExportPath ?? "";
@@ -76,6 +77,22 @@ namespace DownloaderPlus
         {
             var item = combo.SelectedItem as ComboBoxItem;
             return item == null ? fallback : Convert.ToString(item.Tag);
+        }
+
+        private void SourceUrlBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            // Persist the playlist/source URL as the user edits it, so it survives
+            // closing the app or an in-place installer update without requiring a download.
+            settings.SourceUrl = SourceUrlBox.Text.Trim();
+            try
+            {
+                settings.Save();
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Не удалось автоматически сохранить ссылку", false);
+                Debug.WriteLine("Source URL autosave failed: " + ex);
+            }
         }
 
         private void CaptureSettings()
@@ -522,6 +539,9 @@ namespace DownloaderPlus
 
         private void MainWindow_Closing(object sender, System.ComponentModel.CancelEventArgs e)
         {
+            // Final save of all fields on exit; the source URL is also autosaved while editing.
+            try { CaptureSettings(); }
+            catch (Exception ex) { Debug.WriteLine("Final settings save failed: " + ex); }
             closing = true;
             runner.Dispose();
         }
