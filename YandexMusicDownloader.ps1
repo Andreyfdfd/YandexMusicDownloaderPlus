@@ -1565,7 +1565,8 @@ function Get-ReportedAudioPaths([string]$Text) {
     # Observed output: [1/1] [AAC 192kbps] Загружается D:\...\Track.m4a
     $pattern = '(?i)^\s*(?:\[\d+\s*/\s*\d+\]\s*)?(?:\[[^\]]+\]\s*)*(?:Загружается|Скачивается|Downloading|Download(?:ing)?)\s+(?<Path>.+\.' + $extensionsPattern + ')\s*$'
 
-    foreach ($line in [regex]::Split($Text, '\r?\n')) {
+    $parseText = Repair-LegacyConsoleEncoding -Text $Text
+    foreach ($line in [regex]::Split($parseText, '\r?\n')) {
         if ($line -match $pattern) {
             $path = $Matches['Path'].Trim().Trim('"')
             try { $path = [System.IO.Path]::GetFullPath($path) } catch { }
@@ -1844,6 +1845,23 @@ function Invoke-DownloadPass([string]$PassName, [string]$QualityValue) {
         Text = $outputText
         FileStats = $fileStats
     }
+}
+
+function Repair-LegacyConsoleEncoding([string]$Text) {
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
+    # Upstream CLI output can be UTF-8 bytes interpreted as CP866 by the
+    # PowerShell capture path. Repair only when the reverse conversion restores
+    # recognizable Russian unavailable-track wording; otherwise preserve input.
+    if ($Text -notmatch '[╨╤╞╟╠╡╢╣╦╧╨╩╪╫╬]') { return $Text }
+    try {
+        $cp866 = [System.Text.Encoding]::GetEncoding(866)
+        $utf8 = [System.Text.Encoding]::UTF8
+        $repaired = $utf8.GetString($cp866.GetBytes($Text))
+        if ($repaired -match '(?i)(не\s+доступен|недоступен|недоступна|недоступно)\s+для\s+скачивания') {
+            return $repaired
+        }
+    } catch { }
+    return $Text
 }
 
 function Get-UnavailableTrackEntries([string]$Text) {
