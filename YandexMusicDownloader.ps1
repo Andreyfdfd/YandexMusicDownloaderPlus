@@ -2811,35 +2811,6 @@ try {
 
 if (-not $script:guiMode) { Read-Host 'Нажми Enter, чтобы закрыть окно' | Out-Null }
 if ($script:guiMode -and $script:guiExitCode -ne 0) { exit $script:guiExitCode }
-).Groups['Stamp'].Value
-            $diagnosticPaths = @(
-                (Join-Path $LogsDir "source-inventory-$oldStamp.csv"),
-                (Join-Path $LogsDir "library-status-$oldStamp.csv"),
-                (Join-Path $LogsDir "retry-queue-$oldStamp.csv"),
-                (Join-Path $LogsDir "recovery-results-$oldStamp.csv")
-            )
-            @(
-                ''
-                'Диагностика пустой очереди восстановления:'
-                ('Источник лога: {0}' -f $PreviousLogPath)
-                ('Причина парсера/очереди: {0}' -f [string]$queueResult.Error)
-                ('Снимок источника в памяти: {0} записей' -f $sourceInventoryCount)
-                foreach ($diagnosticPath in $diagnosticPaths) {
-                    ('Файл: {0} | существует: {1}' -f $diagnosticPath, (Test-Path -LiteralPath $diagnosticPath -PathType Leaf))
-                }
-            ) | Out-File -LiteralPath $script:logPath -Encoding utf8 -Append
-        }
-        if ($queueResult.ReusedRecoveryQueue) {
-            Write-Host 'В предыдущей очереди не осталось треков для повторного восстановления.' -ForegroundColor Green
-        } elseif ([string]$script:resumeSettings.Url -match '/track/\d+') {
-            Write-Host 'Выбран лог одиночного трека, который в этом запуске скачался успешно. В нём нет списка неудачных композиций, поэтому очередь пуста.' -ForegroundColor Yellow
-            Write-Host 'Чтобы проверить нужную функцию, сначала запусти пункт 1 с полной ссылкой на плейлист/альбом. После отчёта выбери здесь лог именно этого запуска.' -ForegroundColor Gray
-        } else {
-            Write-Host 'В выбранном логе не обнаружены треки, которые можно надёжно сопоставить с неудачной загрузкой.' -ForegroundColor Yellow
-            Write-Host 'Если это старый запуск, созданный до снимков источника, сначала запусти пункт 1 с полной ссылкой на плейлист/альбом, чтобы создать точный снимок.' -ForegroundColor Gray
-        }
-        return
-    }
     $queue = @($queue | Where-Object { -not (Test-NonRecoverableServiceFailure -Details ([string]$_.Details)) })
     if ($queue.Count -eq 0) {
         Write-Host "Очередь содержит только недоступные, удалённые или запрещённые сервисом позиции. Другие backend-модули для обхода этих ограничений запускаться не будут." -ForegroundColor Yellow
