@@ -21,6 +21,7 @@ namespace DownloaderPlus
         private readonly string applicationRoot;
         private bool closing;
         private bool browserConsentForCurrentRun;
+        private bool returnToFailedTracksAfterSingleRetry;
         private int failedSearchOffset;
 
         private sealed class FailedTrack
@@ -375,6 +376,7 @@ namespace DownloaderPlus
                 var consent = MessageBox.Show(this, "Разрешить yt-dlp использовать cookies выбранного браузера для этой повторной попытки? Это может дать локальному процессу доступ к браузерной сессии.", "Согласие на браузерную сессию", MessageBoxButton.YesNo, MessageBoxImage.Warning);
                 browserConsentForCurrentRun = consent == MessageBoxResult.Yes;
             } else browserConsentForCurrentRun = false;
+            returnToFailedTracksAfterSingleRetry = true;
             StartBackend("download", track.TrackUrl, settings.MusicPath, null);
         }
 
@@ -663,6 +665,7 @@ namespace DownloaderPlus
             {
                 DownloadProgress.IsIndeterminate = false;
                 SetStatus("Ошибка запуска", false);
+                returnToFailedTracksAfterSingleRetry = false;
                 MessageBox.Show(this, "Не удалось запустить backend: " + ex.Message,
                     "Ошибка запуска", MessageBoxButton.OK, MessageBoxImage.Error);
             }
@@ -705,7 +708,12 @@ namespace DownloaderPlus
                     : "Код завершения: " + exitCode + ". Проверь журнал для подробностей.";
                 SetStatus(exitCode == 0 ? "Готово" : "Завершено с ошибками", false);
                 RefreshLogs();
-                RefreshFailedTracks();
+                if (returnToFailedTracksAfterSingleRetry)
+                {
+                    returnToFailedTracksAfterSingleRetry = false;
+                    ShowPage(3, "Неудачные треки", "Список проблемных композиций: повторная загрузка по одной или всем сразу.", NavFailedTracks);
+                    RefreshFailedTracks();
+                }
             }), DispatcherPriority.Normal);
         }
 
