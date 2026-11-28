@@ -21,6 +21,7 @@ namespace DownloaderPlus
         private readonly string applicationRoot;
         private bool closing;
         private bool browserConsentForCurrentRun;
+        private int failedSearchOffset;
 
         private sealed class FailedTrack
         {
@@ -196,6 +197,7 @@ namespace DownloaderPlus
 
         private void FailedRunCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
+            failedSearchOffset = 0;
             if (FailedRunCombo == null || FailedTracksList == null) return;
             RefreshFailedTracks();
         }
@@ -333,20 +335,24 @@ namespace DownloaderPlus
         {
             var tracks = FailedTracksList.Items.Cast<FailedTrack>().ToList();
             if (tracks.Count == 0) return;
-            int openCount = Math.Min(10, tracks.Count);
+            if (failedSearchOffset >= tracks.Count) failedSearchOffset = 0;
+            int start = failedSearchOffset;
+            int openCount = Math.Min(10, tracks.Count - start);
             string prompt = "Открыть веб-поиск по " + openCount + " композициям в отдельных вкладках браузера?";
-            if (tracks.Count > openCount) prompt += Environment.NewLine + "В списке " + tracks.Count + " треков; откроются первые 10. Остальные можно открыть следующей порцией, изменив порядок/выбор запуска.";
+            if (tracks.Count > openCount) prompt += Environment.NewLine + "Остальные треки будут доступны следующей группой при повторном нажатии.";
             if (MessageBox.Show(this, prompt, "Массовый поиск", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
             try
             {
-                for (int i = 0; i < openCount; i++)
+                for (int i = start; i < start + openCount; i++)
                 {
                     var track = tracks[i];
                     string query = ((track.Artists ?? "") + " " + (track.TrackTitle ?? "") + " official audio").Trim();
                     string url = "https://www.google.com/search?q=" + Uri.EscapeDataString(query);
                     Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
-                    if (i + 1 < openCount) System.Threading.Thread.Sleep(150);
+                    if (i + 1 < start + openCount) System.Threading.Thread.Sleep(150);
                 }
+                failedSearchOffset = (start + openCount) % tracks.Count;
+                FailedTracksSummary.Text = "Открыто поисков " + openCount + ". Следующая группа начинается с трека " + (failedSearchOffset + 1) + " из " + tracks.Count + ".";
             }
             catch (Exception ex)
             {
