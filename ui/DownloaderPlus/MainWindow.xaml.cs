@@ -827,7 +827,19 @@ namespace DownloaderPlus
 
             var all = Directory.GetFiles(logsDirectory)
                 .Select(p => new FileInfo(p))
-                .OrderByDescending(f => f.LastWriteTimeUtc)
+                .OrderByDescending(f =>
+                {
+                    // Prefer the run timestamp embedded in download logs; file timestamps
+                    // can be altered by copying, restoring backups, or report regeneration.
+                    var match = Regex.Match(f.Name, @"^download-(\\d{8}-\\d{6})\\.log$", RegexOptions.IgnoreCase);
+                    DateTime runTimestamp;
+                    return match.Success && DateTime.TryParseExact(match.Groups[1].Value,
+                        "yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.AssumeLocal, out runTimestamp)
+                        ? runTimestamp
+                        : f.LastWriteTime;
+                })
+                .ThenByDescending(f => f.LastWriteTimeUtc)
                 .Take(250)
                 .Select(f => new LogEntry
                 {
