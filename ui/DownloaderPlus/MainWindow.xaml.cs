@@ -270,6 +270,9 @@ namespace DownloaderPlus
                 FailedTracksList.ItemsSource = null;
                 FailedTracksSummary.Text = "Нет журналов загрузки для выбора.";
                 RetryFailedAllButton.IsEnabled = false;
+                SearchFailedAllButton.IsEnabled = false;
+                RetryFailedSelectedButton.IsEnabled = false;
+                SearchFailedSelectedButton.IsEnabled = false;
                 return;
             }
 
@@ -279,6 +282,9 @@ namespace DownloaderPlus
                 FailedTracksList.ItemsSource = null;
                 FailedTracksSummary.Text = "Не удалось определить дату выбранного запуска.";
                 RetryFailedAllButton.IsEnabled = false;
+                SearchFailedAllButton.IsEnabled = false;
+                RetryFailedSelectedButton.IsEnabled = false;
+                SearchFailedSelectedButton.IsEnabled = false;
                 return;
             }
 
