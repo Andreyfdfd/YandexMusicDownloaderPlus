@@ -831,7 +831,7 @@ namespace DownloaderPlus
                 {
                     // Prefer the run timestamp embedded in download logs; file timestamps
                     // can be altered by copying, restoring backups, or report regeneration.
-                    var match = Regex.Match(f.Name, @"^download-(\\d{8}-\\d{6})\\.log$", RegexOptions.IgnoreCase);
+                    var match = Regex.Match(f.Name, @"^download-(\d{8}-\d{6})\.log$", RegexOptions.IgnoreCase);
                     DateTime runTimestamp;
                     return match.Success && DateTime.TryParseExact(match.Groups[1].Value,
                         "yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture,
