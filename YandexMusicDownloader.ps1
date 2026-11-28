@@ -901,9 +901,18 @@ function Get-RetryQueueFromLog([string]$PreviousLogPath, [string]$OutputDir, [st
         $hasOriginalInventory = $inventory.Count -gt 0
     } else {
         Write-Host 'У выбранного запуска нет сохранённого снимка треков. Пытаюсь прочитать состав источника сейчас; привязка старых позиций может оказаться невозможной.' -ForegroundColor Yellow
-        $snapshot = Invoke-SourceInventory -SourceUrl $script:resumeSettings.Url -PythonExe $PythonExe -DelaySeconds $DelaySeconds
-        if ($snapshot.Success) { $inventory = @($snapshot.Tracks) }
-        else { Write-Host "Не удалось получить состав источника: $($snapshot.Error)" -ForegroundColor Yellow }
+        # The source URL must come from the selected historical log, not current settings.
+        # This prevents rebuilding inventory for an unrelated playlist/album.
+        $oldLogTextForSource = Get-Content -LiteralPath $PreviousLogPath -Raw -ErrorAction SilentlyContinue
+        $sourceUrlMatch = [regex]::Match([string]$oldLogTextForSource, '(?im)^\\s*(?:Ссылка|URL)\\s*:\\s*(?<Url>https?://\\S+)')
+        $historicalSourceUrl = if ($sourceUrlMatch.Success) { $sourceUrlMatch.Groups['Url'].Value.Trim() } else { [string]$script:resumeSettings.Url }
+        if ([string]::IsNullOrWhiteSpace($historicalSourceUrl)) {
+            Write-Host 'В выбранном журнале нет ссылки на исходный плейлист/альбом, а в текущих настройках ссылка пустая. Снимок не запрашивался.' -ForegroundColor Yellow
+        } else {
+            $snapshot = Invoke-SourceInventory -SourceUrl $historicalSourceUrl -PythonExe $PythonExe -DelaySeconds $DelaySeconds
+            if ($snapshot.Success) { $inventory = @($snapshot.Tracks) }
+            else { Write-Host "Не удалось получить состав источника: $($snapshot.Error)" -ForegroundColor Yellow }
+        }
     }
 
     # Build lookup indexes once. The previous nested Where-Object lookups scanned
