@@ -159,6 +159,37 @@ $guiSmoke = Start-Process -FilePath $installedGui -ArgumentList @('--self-test')
 if ($guiSmoke.ExitCode -ne 0) { throw "Графическое приложение не прошло самопроверку после установки (код $($guiSmoke.ExitCode))." }
 Write-Host 'WPF GUI self-test: OK'
 
+# Verify the installer exposes a usable uninstaller in the install folder and
+# Start Menu, then install over the same directory to exercise upgrade mode.
+$uninstaller = Join-Path $smokeDir 'unins000.exe'
+$appUninstallShortcut = Join-Path $smokeDir 'Uninstall Downloader Plus.lnk'
+$startMenuUninstallShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Yandex Music Downloader Plus\Удалить Downloader Plus.lnk'
+if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
+    throw 'В каталоге установки не найден штатный unins000.exe.'
+}
+if (-not (Test-Path -LiteralPath $appUninstallShortcut -PathType Leaf)) {
+    throw 'В каталоге установки не создан ярлык Uninstall Downloader Plus.'
+}
+if (-not (Test-Path -LiteralPath $startMenuUninstallShortcut -PathType Leaf)) {
+    throw 'В меню Пуск не создан ярлык удаления Downloader Plus.'
+}
+
+$firstMusicPath = (Get-Content -LiteralPath $settingsFile -Raw).Trim()
+$upgradeInstall = Start-Process -FilePath $setupExe -ArgumentList $smokeArgs -Wait -PassThru
+if ($upgradeInstall.ExitCode -ne 0) {
+    throw "Установка поверх существующей версии завершилась с кодом $($upgradeInstall.ExitCode)."
+}
+foreach ($upgradeFile in @($installedGui,$installedLauncher,$installedPython,$uninstaller,$appUninstallShortcut)) {
+    if (-not (Test-Path -LiteralPath $upgradeFile -PathType Leaf)) {
+        throw "После обновления отсутствует файл: $upgradeFile"
+    }
+}
+$secondMusicPath = (Get-Content -LiteralPath $settingsFile -Raw).Trim()
+if ($secondMusicPath -ne $firstMusicPath) {
+    throw "Обновление изменило музыкальную папку пользователя: '$firstMusicPath' -> '$secondMusicPath'."
+}
+Write-Host 'Smoke test: повторная установка поверх существующей и сохранение настроек — OK.' -ForegroundColor Green
+
 $cliHelp = (& $installedLauncher --help 2>&1 | Out-String)
 $launcherExit = $LASTEXITCODE
 if ($launcherExit -ne 0 -or $cliHelp -notmatch '--token' -or $cliHelp -notmatch '--url') {
