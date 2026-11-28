@@ -15,6 +15,7 @@ AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL=https://github.com/Andreyfdfd/YandexMusicDownloaderPlus
 DefaultDirName={localappdata}\Programs\YandexMusicDownloaderPlus
+UsePreviousAppDir=yes
 DefaultGroupName=Yandex Music Downloader Plus
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -29,7 +30,8 @@ WizardStyle=modern
 SetupLogging=yes
 UninstallDisplayName=Yandex Music Downloader Plus
 UninstallDisplayIcon={app}\app\DownloaderPlus.exe
-CloseApplications=no
+CloseApplications=yes
+CloseApplicationsFilter=*DownloaderPlus.exe
 
 [Types]
 Name: "full"; Description: "Полная установка"
@@ -62,6 +64,8 @@ Source: "{#PayloadDir}\ПРОЧТИ_МЕНЯ.txt"; DestDir: "{app}\docs"; Compon
 [Icons]
 Name: "{autoprograms}\Yandex Music Downloader Plus\Downloader Plus"; Filename: "{app}\app\DownloaderPlus.exe"; Components: core
 Name: "{autoprograms}\Yandex Music Downloader Plus\Консольная версия"; Filename: "{app}\Запустить_загрузку.bat"; Components: core
+Name: "{autoprograms}\Yandex Music Downloader Plus\Удалить Downloader Plus"; Filename: "{uninstallexe}"
+Name: "{app}\Uninstall Downloader Plus"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\Downloader Plus"; Filename: "{app}\app\DownloaderPlus.exe"; Components: core; Tasks: desktopicon
 
 [Run]
@@ -117,7 +121,8 @@ begin
     SettingsDir := ExpandConstant('{userappdata}\YandexMusicDownloaderPlus');
     if ForceDirectories(SettingsDir) then
     begin
-      if not SaveStringToFile(AddBackslash(SettingsDir) + 'music-path.txt', MusicPath + #13#10, False) then
+      if not FileExists(AddBackslash(SettingsDir) + 'music-path.txt') and
+        not SaveStringToFile(AddBackslash(SettingsDir) + 'music-path.txt', MusicPath + #13#10, False) then
         MsgBox('Не удалось сохранить выбранную папку музыки. При первом запуске её можно будет указать вручную.',
           mbInformation, MB_OK);
     end
