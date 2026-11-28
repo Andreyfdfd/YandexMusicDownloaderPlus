@@ -22,6 +22,18 @@ namespace DownloaderPlus
         private bool closing;
         private bool browserConsentForCurrentRun;
 
+        private sealed class FailedTrack
+        {
+            public string TrackTitle { get; set; }
+            public string Artists { get; set; }
+            public string AlbumTitle { get; set; }
+            public string TrackUrl { get; set; }
+            public string RelativeBasePath { get; set; }
+            public string Details { get; set; }
+            public string DisplayName { get; set; }
+            public string TrackKey { get; set; }
+        }
+
         private sealed class LogEntry
         {
             public string FullPath { get; set; }
@@ -164,15 +176,196 @@ namespace DownloaderPlus
             RefreshLogs();
         }
 
+        private void NavFailedTracks_Click(object sender, RoutedEventArgs e)
+        {
+            ShowPage(3, "Неудачные треки", "Список проблемных композиций: повторная загрузка по одной или всем сразу.", sender as Button);
+            RefreshLogs();
+            RefreshFailedTracks();
+        }
+
         private void NavLogs_Click(object sender, RoutedEventArgs e)
         {
-            ShowPage(3, "Журналы и отчёты", "История операций, диагностика и пофайловые результаты.", sender as Button);
+            ShowPage(4, "Журналы и отчёты", "История операций, диагностика и пофайловые результаты.", sender as Button);
             RefreshLogs();
         }
 
         private void NavSettings_Click(object sender, RoutedEventArgs e)
         {
-            ShowPage(4, "Настройки", "Токен, пути и параметры работы Downloader Plus.", sender as Button);
+            ShowPage(5, "Настройки", "Токен, пути и параметры работы Downloader Plus.", sender as Button);
+        }
+
+        private void FailedRunCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (FailedRunCombo == null || FailedTracksList == null) return;
+            RefreshFailedTracks();
+        }
+
+        private void RefreshFailedTracks_Click(object sender, RoutedEventArgs e)
+        {
+            RefreshLogs();
+            RefreshFailedTracks();
+        }
+
+        private static List<string> ParseCsvLine(string line)
+        {
+            var fields = new List<string>();
+            var current = new StringBuilder();
+            bool quoted = false;
+            for (int i = 0; i < (line ?? "").Length; i++)
+            {
+                char ch = line[i];
+                if (ch == '"')
+                {
+                    if (quoted && i + 1 < line.Length && line[i + 1] == '"') { current.Append('"'); i++; }
+                    else quoted = !quoted;
+                }
+                else if (ch == ',' && !quoted) { fields.Add(current.ToString()); current.Clear(); }
+                else current.Append(ch);
+            }
+            fields.Add(current.ToString());
+            return fields;
+        }
+
+        private static List<Dictionary<string, string>> ReadCsv(string path)
+        {
+            var rows = new List<Dictionary<string, string>>();
+            if (!File.Exists(path)) return rows;
+            var lines = File.ReadAllLines(path, Encoding.UTF8);
+            if (lines.Length < 2) return rows;
+            var headers = ParseCsvLine(lines[0]);
+            for (int i = 1; i < lines.Length; i++)
+            {
+                if (string.IsNullOrWhiteSpace(lines[i])) continue;
+                var values = ParseCsvLine(lines[i]);
+                var row = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                for (int h = 0; h < headers.Count; h++) row[headers[h]] = h < values.Count ? values[h] : "";
+                rows.Add(row);
+            }
+            return rows;
+        }
+
+        private static string CsvValue(Dictionary<string, string> row, string key)
+        {
+            string value;
+            return row != null && row.TryGetValue(key, out value) ? value : "";
+        }
+
+        private bool TrackFileExists(FailedTrack track)
+        {
+            if (track == null || string.IsNullOrWhiteSpace(track.RelativeBasePath)) return false;
+            string basePath = Path.Combine(settings.MusicPath ?? "", track.RelativeBasePath.Replace('/', Path.DirectorySeparatorChar));
+            foreach (string ext in new[] { ".m4a", ".mp3", ".flac", ".aac", ".ogg", ".opus", ".wav" })
+                if (File.Exists(basePath + ext)) return true;
+            return false;
+        }
+
+        private void RefreshFailedTracks()
+        {
+            var selectedRun = FailedRunCombo.SelectedItem as LogEntry;
+            if (selectedRun == null)
+            {
+                FailedTracksList.ItemsSource = null;
+                FailedTracksSummary.Text = "Нет журналов загрузки для выбора.";
+                RetryFailedAllButton.IsEnabled = false;
+                return;
+            }
+
+            string stamp = Regex.Match(Path.GetFileName(selectedRun.FullPath), @"^download-(\d{8}-\d{6})\.log$", RegexOptions.IgnoreCase).Groups[1].Value;
+            if (string.IsNullOrWhiteSpace(stamp))
+            {
+                FailedTracksList.ItemsSource = null;
+                FailedTracksSummary.Text = "Не удалось определить дату выбранного запуска.";
+                RetryFailedAllButton.IsEnabled = false;
+                return;
+            }
+
+            string logsDir = Path.Combine(applicationRoot, "logs");
+            var failures = new Dictionary<string, FailedTrack>(StringComparer.OrdinalIgnoreCase);
+            string reportPath = Path.Combine(logsDir, "library-status-" + stamp + ".csv");
+            foreach (var row in ReadCsv(reportPath))
+            {
+                if (!string.Equals(CsvValue(row, "Category"), "Не удалось скачать", StringComparison.OrdinalIgnoreCase)) continue;
+                string url = CsvValue(row, "TrackUrl");
+                string title = CsvValue(row, "TrackTitle");
+                if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(title)) continue;
+                var item = new FailedTrack { TrackTitle = title, Artists = CsvValue(row, "Artists"), AlbumTitle = CsvValue(row, "AlbumTitle"), TrackUrl = url, RelativeBasePath = CsvValue(row, "RelativeBasePath"), Details = CsvValue(row, "Details"), TrackKey = CsvValue(row, "TrackKey") };
+                string key = item.TrackKey ?? url;
+                if (!failures.ContainsKey(key)) failures[key] = item;
+            }
+
+            string queuePath = Path.Combine(logsDir, "retry-queue-" + stamp + ".csv");
+            foreach (var row in ReadCsv(queuePath))
+            {
+                string url = CsvValue(row, "TrackUrl");
+                string title = CsvValue(row, "TrackTitle");
+                if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(title)) continue;
+                var item = new FailedTrack { TrackTitle = title, Artists = CsvValue(row, "Artists"), AlbumTitle = CsvValue(row, "AlbumTitle"), TrackUrl = url, RelativeBasePath = CsvValue(row, "RelativeBasePath"), Details = CsvValue(row, "Details"), TrackKey = CsvValue(row, "TrackKey") };
+                string key = item.TrackKey ?? url;
+                if (!failures.ContainsKey(key)) failures[key] = item;
+            }
+
+            string recoveryPath = Path.Combine(logsDir, "recovery-results-" + stamp + ".csv");
+            var recovered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var row in ReadCsv(recoveryPath))
+            {
+                string key = CsvValue(row, "TrackKey");
+                if (string.IsNullOrWhiteSpace(key)) key = CsvValue(row, "TrackId");
+                if (string.Equals(CsvValue(row, "Status"), "Успешно восстановлен", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(key))
+                    recovered.Add(key);
+            }
+            var visible = failures.Values.Where(t => !recovered.Contains(t.TrackKey ?? "") && !TrackFileExists(t))
+                .Select(t => { t.DisplayName = (string.IsNullOrWhiteSpace(t.Artists) ? "" : t.Artists + " — ") + t.TrackTitle + (string.IsNullOrWhiteSpace(t.Details) ? "" : "  |  " + t.Details); return t; })
+                .OrderBy(t => t.Artists).ThenBy(t => t.TrackTitle).ToList();
+            FailedTracksList.ItemsSource = visible;
+            FailedTracksSummary.Text = visible.Count == 0 ? "Для выбранного запуска не осталось незавершённых треков (или отчёт пока отсутствует)." : "Неудачных/не подтверждённых композиций: " + visible.Count;
+            RetryFailedAllButton.IsEnabled = visible.Count > 0;
+        }
+
+        private void FailedTracksList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            bool selected = FailedTracksList.SelectedItem is FailedTrack;
+            RetryFailedSelectedButton.IsEnabled = selected;
+            SearchFailedSelectedButton.IsEnabled = selected;
+        }
+
+        private void RetryFailedSelected_Click(object sender, RoutedEventArgs e)
+        {
+            var track = FailedTracksList.SelectedItem as FailedTrack;
+            if (track == null) return;
+            if (runner.IsRunning) { MessageBox.Show(this, "Сначала дождись завершения текущей операции.", "Backend занят", MessageBoxButton.OK, MessageBoxImage.Information); return; }
+            if (!EnsureToken()) return;
+            CaptureSettings();
+            if (settings.AllowBrowserFallback)
+            {
+                var consent = MessageBox.Show(this, "Разрешить yt-dlp использовать cookies выбранного браузера для этой повторной попытки? Это может дать локальному процессу доступ к браузерной сессии.", "Согласие на браузерную сессию", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                browserConsentForCurrentRun = consent == MessageBoxResult.Yes;
+            } else browserConsentForCurrentRun = false;
+            SourceUrlBox.Text = track.TrackUrl;
+            StartBackend("download", track.TrackUrl, settings.MusicPath, null);
+        }
+
+        private void RetryFailedAll_Click(object sender, RoutedEventArgs e)
+        {
+            var selectedRun = FailedRunCombo.SelectedItem as LogEntry;
+            if (selectedRun == null || runner.IsRunning) return;
+            if (!EnsureToken()) return;
+            CaptureSettings();
+            if (settings.AllowBrowserFallback)
+            {
+                var consent = MessageBox.Show(this, "Разрешить yt-dlp использовать cookies выбранного браузера для восстановления всех неудачных треков?", "Согласие на браузерную сессию", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                browserConsentForCurrentRun = consent == MessageBoxResult.Yes;
+            } else browserConsentForCurrentRun = false;
+            StartBackend("retry", settings.MusicPath, settings.MusicPath, selectedRun.FullPath);
+        }
+
+        private void SearchFailedSelected_Click(object sender, RoutedEventArgs e)
+        {
+            var track = FailedTracksList.SelectedItem as FailedTrack;
+            if (track == null) return;
+            string query = ((track.Artists ?? "") + " " + (track.TrackTitle ?? "") + " official music").Trim();
+            string url = "https://www.google.com/search?q=" + Uri.EscapeDataString(query);
+            try { Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true }); }
+            catch (Exception ex) { MessageBox.Show(this, "Не удалось открыть поиск: " + ex.Message, "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning); }
         }
 
         private void BrowseMusic_Click(object sender, RoutedEventArgs e)
@@ -403,9 +596,9 @@ namespace DownloaderPlus
                     action == "retry" ? "Восстановление треков…" :
                     action == "update" ? "Обновление основного загрузчика…" : "Загрузка музыки…";
                 SetStatus("Выполняется", true);
-                WorkspaceTabs.SelectedIndex = action == "update" ? 4 : 0;
+                WorkspaceTabs.SelectedIndex = action == "update" ? 5 : action == "retry" ? WorkspaceTabs.SelectedIndex : 0;
                 PageTitle.Text = action == "export" ? "Экспорт библиотеки" :
-                    action == "retry" ? "Восстановление" :
+                    action == "retry" ? (WorkspaceTabs.SelectedIndex == 3 ? "Неудачные треки" : "Восстановление") :
                     action == "update" ? "Настройки и обновления" : "Загрузка музыки";
 
                 var runSettings = new AppSettings
@@ -478,6 +671,7 @@ namespace DownloaderPlus
                     : "Код завершения: " + exitCode + ". Проверь журнал для подробностей.";
                 SetStatus(exitCode == 0 ? "Готово" : "Завершено с ошибками", false);
                 RefreshLogs();
+                RefreshFailedTracks();
             }), DispatcherPriority.Normal);
         }
 
@@ -516,6 +710,17 @@ namespace DownloaderPlus
             RecoveryLogsList.ItemsSource = recoverable;
             if (RecoveryLogsList.Items.Count > 0 && RecoveryLogsList.SelectedIndex < 0)
                 RecoveryLogsList.SelectedIndex = 0;
+            if (FailedRunCombo != null)
+            {
+                var previous = FailedRunCombo.SelectedItem as LogEntry;
+                string previousPath = previous == null ? null : previous.FullPath;
+                FailedRunCombo.ItemsSource = recoverable;
+                if (!string.IsNullOrWhiteSpace(previousPath))
+                    FailedRunCombo.SelectedItem = recoverable.FirstOrDefault(x => x.FullPath == previousPath);
+                if (FailedRunCombo.SelectedIndex < 0 && FailedRunCombo.Items.Count > 0)
+                    FailedRunCombo.SelectedIndex = 0;
+                RefreshFailedTracks();
+            }
         }
 
         private void OpenLogsFolder_Click(object sender, RoutedEventArgs e)
