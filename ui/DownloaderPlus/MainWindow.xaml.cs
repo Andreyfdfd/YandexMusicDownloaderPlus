@@ -321,6 +321,7 @@ namespace DownloaderPlus
             FailedTracksList.ItemsSource = visible;
             FailedTracksSummary.Text = visible.Count == 0 ? "Для выбранного запуска не осталось незавершённых треков (или отчёт пока отсутствует)." : "Неудачных/не подтверждённых композиций: " + visible.Count;
             RetryFailedAllButton.IsEnabled = visible.Count > 0;
+            SearchFailedAllButton.IsEnabled = visible.Count > 0;
         }
 
         private void FailedTracksList_SelectionChanged(object sender, SelectionChangedEventArgs e)
