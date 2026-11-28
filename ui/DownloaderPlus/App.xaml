@@ -39,14 +39,18 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="{x:Type TextBox}">
-                        <Border x:Name="TextBorder" Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="11">
-                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
-                                          Background="Transparent"
+                        <!-- The hit-test surface must cover the whole visual field.
+                             Do not use TextBox.Padding as ScrollViewer.Margin: it shrinks
+                             the interactive host and leaves a non-focusable Border-only ring. -->
+                        <Grid Background="Transparent">
+                            <Border x:Name="TextBorder" Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="11"/>
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="0"
+                                          Padding="{TemplateBinding Padding}" Background="Transparent"
                                           HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
                                           SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
-                        </Border>
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="TextBorder" Property="BorderBrush" Value="#64748B"/>
@@ -72,14 +76,16 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="{x:Type PasswordBox}">
-                        <Border x:Name="PasswordBorder" Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="11">
-                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
-                                          Background="Transparent"
+                        <!-- Keep the content host full-size so the entire field receives clicks. -->
+                        <Grid Background="Transparent">
+                            <Border x:Name="PasswordBorder" Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="11"/>
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="0"
+                                          Padding="{TemplateBinding Padding}" Background="Transparent"
                                           HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
                                           SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
-                        </Border>
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsKeyboardFocused" Value="True">
                                 <Setter TargetName="PasswordBorder" Property="BorderBrush" Value="#A78BFA"/>
