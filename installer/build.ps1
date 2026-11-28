@@ -124,6 +124,13 @@ $iscc = $isccCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Lea
 if (-not $iscc) { throw 'ISCC.exe Inno Setup 7 не найден после установки.' }
 
 $installerScript = Join-Path $PSScriptRoot 'YandexMusicDownloaderPlus.iss'
+$installerCode = Get-Content -LiteralPath $installerScript -Raw
+foreach ($requiredUpgradeFeature in @('function DetectExistingInstall()', 'function InitializeSetup()', 'WizardForm.DirEdit.Text := DetectedInstallDir', 'Обнаружена установленная версия Downloader Plus')) {
+    if ($installerCode -notmatch [regex]::Escape($requiredUpgradeFeature)) {
+        throw "В сценарии установщика отсутствует проверка обнаружения/обновления существующей версии: $requiredUpgradeFeature"
+    }
+}
+Write-Host 'Installer upgrade-detection source check: OK'
 & $iscc "/DPayloadDir=$payload" "/DOutputDir=$OutputDirectory" $installerScript
 if ($LASTEXITCODE -ne 0) { throw "Компиляция установщика завершилась с кодом $LASTEXITCODE." }
 
