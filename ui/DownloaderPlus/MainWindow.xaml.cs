@@ -209,6 +209,53 @@ namespace DownloaderPlus
             RefreshFailedTracks();
         }
 
+        private sealed class ParsedUnavailable
+        {
+            public int TrackIndex { get; set; }
+            public string TrackTitle { get; set; }
+            public string Artists { get; set; }
+        }
+
+        private static string NormalizeLegacyConsoleMojibake(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            // Undo UTF-8 bytes interpreted as CP866, then saved as UTF-8.
+            try
+            {
+                byte[] cp866Bytes = Encoding.GetEncoding(866).GetBytes(text);
+                string repaired = Encoding.UTF8.GetString(cp866Bytes);
+                if (repaired.Contains("не доступен для скачивания") || repaired.Contains("недоступен для скачивания"))
+                    return repaired;
+            }
+            catch { }
+            return text;
+        }
+
+        private static List<ParsedUnavailable> ParseUnavailableTracksFromLog(string text)
+        {
+            var result = new List<ParsedUnavailable>();
+            if (string.IsNullOrWhiteSpace(text)) return result;
+            var pattern = new Regex(@"^\\s*\\[(?<index>\\d+)\\s*/\\s*\\d+\\]\\s*(?:Трек\\s+)?(?<track>.+?)\\s+(?:не\\s+доступен|недоступен|недоступна|недоступно)\\s+для\\s+скачивания\\s*$",
+                RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.CultureInvariant);
+            foreach (Match match in pattern.Matches(text))
+            {
+                string track = match.Groups["track"].Value.Trim();
+                int index;
+                if (!int.TryParse(match.Groups["index"].Value, out index) || string.IsNullOrWhiteSpace(track)) continue;
+                string artists = "";
+                string title = track;
+                int separator = track.IndexOf(" - ", StringComparison.Ordinal);
+                if (separator > 0)
+                {
+                    artists = track.Substring(0, separator).Trim();
+                    title = track.Substring(separator + 3).Trim();
+                }
+                result.Add(new ParsedUnavailable { TrackIndex = index, TrackTitle = title, Artists = artists });
+            }
+            return result.GroupBy(x => x.TrackIndex + "|" + x.TrackTitle, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First()).OrderBy(x => x.TrackIndex).ToList();
+        }
+
         private static List<string> ParseCsvLine(string line)
         {
             var fields = new List<string>();
@@ -313,6 +360,26 @@ namespace DownloaderPlus
                 if (!failures.ContainsKey(key)) failures[key] = item;
             }
 
+            // If structured reports are missing or incomplete, parse the run log as a fallback.
+            // PowerShell may have captured Python UTF-8 output through the legacy CP866 console
+            // code page, leaving UTF-8 text represented as CP866 mojibake inside a UTF-8 log.
+            string downloadLogPath = selectedRun.FullPath;
+            string logText = File.Exists(downloadLogPath) ? File.ReadAllText(downloadLogPath, Encoding.UTF8) : "";
+            string normalizedLogText = NormalizeLegacyConsoleMojibake(logText);
+            var logEntries = ParseUnavailableTracksFromLog(normalizedLogText);
+            foreach (var parsed in logEntries)
+            {
+                string key = "log:" + parsed.TrackIndex + "|" + parsed.TrackTitle;
+                if (!failures.ContainsKey(key))
+                    failures[key] = new FailedTrack
+                    {
+                        TrackTitle = parsed.TrackTitle,
+                        Artists = parsed.Artists,
+                        TrackUrl = "",
+                        Details = "Недоступен по данным журнала (позиция " + parsed.TrackIndex + ")"
+                    };
+            }
+
             string recoveryPath = Path.Combine(logsDir, "recovery-results-" + stamp + ".csv");
             var recovered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var row in ReadCsv(recoveryPath))
@@ -326,7 +393,13 @@ namespace DownloaderPlus
                 .Select(t => { t.DisplayName = (string.IsNullOrWhiteSpace(t.Artists) ? "" : t.Artists + " — ") + t.TrackTitle + (string.IsNullOrWhiteSpace(t.Details) ? "" : "  |  " + t.Details); return t; })
                 .OrderBy(t => t.Artists).ThenBy(t => t.TrackTitle).ToList();
             FailedTracksList.ItemsSource = visible;
-            FailedTracksSummary.Text = visible.Count == 0 ? "Для выбранного запуска не осталось незавершённых треков (или отчёт пока отсутствует)." : "Неудачных/не подтверждённых композиций: " + visible.Count;
+            bool reportExists = File.Exists(reportPath) || File.Exists(queuePath);
+            FailedTracksSummary.Text = visible.Count == 0
+                ? (logEntries.Count > 0
+                    ? "Найдено в журнале " + logEntries.Count + " недоступных позиций, но они не попали в список после проверки наличия файлов/восстановлений."
+                    : "Не найдено неудачных треков. Проверены отчёты и основной журнал; если формат журнала не распознан, сообщи об этом.")
+                : "Неудачных/не подтверждённых композиций: " + visible.Count
+                    + (reportExists ? " (отчёты и журнал)" : " (восстановлено из основного журнала)");
             RetryFailedAllButton.IsEnabled = visible.Count > 0;
             SearchFailedAllButton.IsEnabled = visible.Count > 0;
         }
