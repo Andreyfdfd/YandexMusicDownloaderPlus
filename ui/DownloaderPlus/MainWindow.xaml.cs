@@ -34,6 +34,11 @@ namespace DownloaderPlus
 
             applicationRoot = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
             settings = AppSettings.Load();
+            if (!string.IsNullOrWhiteSpace(AppSettings.LastLoadWarning))
+            {
+                MessageBox.Show(this, AppSettings.LastLoadWarning, "Восстановление настроек",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
 
             SourceUrlBox.Text = settings.SourceUrl ?? "";
             ExportSourceBox.Text = settings.SourceUrl ?? "";
