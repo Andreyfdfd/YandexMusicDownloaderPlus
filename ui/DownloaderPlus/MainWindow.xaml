@@ -55,6 +55,12 @@
                             <TextBlock Text="Восстановление" VerticalAlignment="Center"/>
                         </StackPanel>
                     </Button>
+                    <Button x:Name="NavFailedTracks" Style="{StaticResource NavButton}" Click="NavFailedTracks_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="!" Width="30" FontSize="18" Foreground="#FCA5A5"/>
+                            <TextBlock Text="Неудачные треки" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                     <Button x:Name="NavLogs" Style="{StaticResource NavButton}" Click="NavLogs_Click">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="▤" Width="30" FontSize="17" Foreground="#FCD34D"/>
@@ -285,6 +291,33 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
+                        <Border Background="{StaticResource PanelBrush}" CornerRadius="18" Padding="22" Margin="0,0,0,15">
+                            <StackPanel>
+                                <TextBlock Text="Проблемные композиции" FontSize="19" FontWeight="SemiBold"/>
+                                <TextBlock Text="Выбери запуск, чтобы посмотреть неудачные треки. Можно повторить одну композицию, весь список или открыть поиск официальных источников." TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="0,7,0,15"/>
+                                <TextBlock Text="ЗАПУСК" Style="{StaticResource FieldLabel}"/>
+                                <ComboBox x:Name="FailedRunCombo" Height="38" DisplayMemberPath="DisplayName" SelectionChanged="FailedRunCombo_SelectionChanged"/>
+                                <WrapPanel Margin="0,14,0,0">
+                                    <Button Content="Обновить список" Click="RefreshFailedTracks_Click" Margin="0,0,8,8"/>
+                                    <Button x:Name="RetryFailedSelectedButton" Content="↻ Повторить выбранный" Click="RetryFailedSelected_Click" Margin="0,0,8,8" IsEnabled="False"/>
+                                    <Button x:Name="RetryFailedAllButton" Content="↻ Повторить все" Style="{StaticResource AccentButton}" Click="RetryFailedAll_Click" Margin="0,0,8,8" IsEnabled="False"/>
+                                    <Button x:Name="SearchFailedSelectedButton" Content="Поиск официальных источников" Click="SearchFailedSelected_Click" Margin="0,0,8,8" IsEnabled="False"/>
+                                </WrapPanel>
+                                <TextBlock x:Name="FailedTracksSummary" Text="Выбери журнал загрузки." Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Row="1" Background="{StaticResource PanelBrush}" CornerRadius="18" Padding="16">
+                            <ListBox x:Name="FailedTracksList" Background="Transparent" BorderThickness="0" Foreground="{StaticResource TextBrush}" FontSize="13" SelectionChanged="FailedTracksList_SelectionChanged" DisplayMemberPath="DisplayName"/>
+                        </Border>
+                    </Grid>
+                </TabItem>
+
+                <TabItem>
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.Row-definitions>
                         <Border Background="{StaticResource PanelBrush}" CornerRadius="18" Padding="24" Margin="0,0,0,15">
                             <StackPanel>
                                 <TextBlock Text="Журналы и отчёты" FontSize="19" FontWeight="SemiBold"/>
