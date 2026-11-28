@@ -53,7 +53,7 @@
             <Setter Property="Padding" Value="10,7"/>
             <Setter Property="FontSize" Value="14"/>
             <Setter Property="MinHeight" Value="38"/>
-            <Setter Property="ItemContainerStyle" Value="{StaticResource DarkComboItem}"/>
+            <Setter Property="ItemContainerStyle" Value="{DynamicResource DarkComboItem}"/>
         </Style>
         <Style x:Key="DarkComboItem" TargetType="ComboBoxItem">
             <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
